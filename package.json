@@ -1,11 +1,12 @@
 {
-  "name": "kurtel",
+  "name": "@kurtel/cli",
   "version": "0.1.0",
   "description": "Launch self-improving coding agents in the cloud — the Kurtel CLI.",
   "type": "module",
   "bin": {
     "kurtel": "dist/index.js"
   },
+  "publishConfig": { "access": "public" },
   "files": [
     "dist"
   ],
