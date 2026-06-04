@@ -12,7 +12,41 @@ export interface KurtelConfig {
   defaultBranch: string;
   loggedIn: boolean;
   account?: string;
+  organization?: string;
+  token?: string;
   [key: string]: unknown;
+}
+
+// Where the CLI talks to. Override with KURTEL_API_URL for local dev, e.g.
+//   KURTEL_API_URL=http://localhost:3000 kurtel login
+export function apiUrl(): string {
+  return (
+    process.env.KURTEL_API_URL ??
+    (loadConfig().apiUrl as string | undefined) ??
+    "https://app.kurtel.ai"
+  );
+}
+
+export function saveSession(session: {
+  token: string;
+  account?: string | null;
+  organization?: string | null;
+}): void {
+  const config = loadConfig();
+  config.loggedIn = true;
+  config.token = session.token;
+  if (session.account) config.account = session.account;
+  if (session.organization) config.organization = session.organization;
+  saveConfig(config);
+}
+
+export function clearSession(): void {
+  const config = loadConfig();
+  config.loggedIn = false;
+  delete config.token;
+  delete config.account;
+  delete config.organization;
+  saveConfig(config);
 }
 
 const DIR = join(homedir(), ".kurtel");

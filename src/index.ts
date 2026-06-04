@@ -5,7 +5,7 @@ import { loadConfig } from "./lib/config.js";
 import { c, symbols } from "./ui/colors.js";
 import { startSession } from "./session/repl.js";
 import { runCommand } from "./commands/run.js";
-import { loginCommand, logoutCommand } from "./commands/auth.js";
+import { loginCommand, logoutCommand, whoamiCommand } from "./commands/auth.js";
 import { agentsCommand } from "./commands/agents.js";
 import { logsCommand, statusCommand, stopCommand } from "./commands/runtime.js";
 import { configCommand } from "./commands/config.js";
@@ -75,6 +75,11 @@ program
   .command("logout")
   .description("Sign out")
   .action(async () => logoutCommand());
+
+program
+  .command("whoami")
+  .description("Show the signed-in account")
+  .action(() => whoamiCommand());
 
 program
   .command("config")
