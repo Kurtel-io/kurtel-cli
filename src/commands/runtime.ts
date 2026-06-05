@@ -1,62 +1,71 @@
 import { c, symbols } from "../ui/colors.js";
-import { Spinner, sleep } from "../ui/spinner.js";
-import { SAMPLE_AGENTS, statusColor, levelBadge } from "../lib/agents.js";
-import { previewNotice } from "./_shared.js";
+import { sleep } from "../ui/spinner.js";
+import { getRun, getRunLogs, cancelRun, AuthError } from "../lib/api.js";
 
-function findAgent(id: string) {
-  return SAMPLE_AGENTS.find((a) => a.id === id) ?? SAMPLE_AGENTS[0];
+function handleErr(e: unknown): void {
+  if (e instanceof AuthError) console.log(`${c.red(symbols.cross)} ${e.message}`);
+  else console.log(`${c.red(symbols.cross)} ${e instanceof Error ? e.message : String(e)}`);
+  process.exitCode = 1;
 }
 
-const FAKE_LOG_LINES = [
-  ["plan", "Reading repository structure and conventions"],
-  ["plan", "Drafting change set across 4 files"],
-  ["edit", "src/webhooks/handler.ts — add idempotency guard"],
-  ["test", "Running test suite in sandbox"],
-  ["learn", "Captured pattern: prefer repository-scoped idempotency keys"],
-  ["done", "Opened pull request #482"],
-] as const;
-
-export async function logsCommand(id: string): Promise<void> {
-  const agent = findAgent(id);
-  console.log(
-    `\n${c.dim("Streaming logs for")} ${c.indigo(agent.id)} ${c.dim(
-      `· ${agent.repo}`
-    )}\n`
-  );
-
-  for (const [tag, msg] of FAKE_LOG_LINES) {
-    const ts = c.dim(new Date().toLocaleTimeString());
-    const label =
-      tag === "learn"
-        ? c.cyan(`[${tag}]`)
-        : tag === "done"
-        ? c.green(`[${tag}]`)
-        : c.indigo(`[${tag}]`);
-    console.log(`${ts} ${label} ${c.white(msg)}`);
-    await sleep(450);
+function statusLabel(status: string): string {
+  switch (status) {
+    case "running": return c.indigo("● running");
+    case "queued": return c.gray("○ queued");
+    case "succeeded": return c.green("✔ succeeded");
+    case "failed": return c.red("✖ failed");
+    case "canceled": return c.yellow("• canceled");
+    default: return status;
   }
-
-  console.log("");
-  previewNotice("Live logs");
 }
 
-export function statusCommand(id: string): void {
-  const a = findAgent(id);
-  console.log("");
-  console.log(`${c.gray("id")}       ${c.indigo(a.id)}`);
-  console.log(`${c.gray("task")}     ${c.white(a.task)}`);
-  console.log(`${c.gray("repo")}     ${c.white(a.repo)}`);
-  console.log(`${c.gray("level")}    ${levelBadge(a.level)}`);
-  console.log(`${c.gray("status")}   ${statusColor(a.status)}`);
-  console.log(`${c.gray("progress")} ${c.white(a.progress + "%")}`);
-  console.log("");
-  previewNotice("Agent status");
+const TERMINAL = ["succeeded", "failed", "canceled"];
+
+export async function logsCommand(
+  id: string,
+  opts: { follow?: boolean } = {}
+): Promise<void> {
+  try {
+    let printed = 0;
+    for (;;) {
+      const { status, logs } = await getRunLogs(id);
+      if (logs.length > printed) {
+        process.stdout.write(logs.slice(printed));
+        printed = logs.length;
+      }
+      if (!opts.follow || TERMINAL.includes(status)) {
+        console.log(`\n${statusLabel(status)}`);
+        return;
+      }
+      await sleep(1500);
+    }
+  } catch (e) {
+    handleErr(e);
+  }
+}
+
+export async function statusCommand(id: string): Promise<void> {
+  try {
+    const run = await getRun(id);
+    console.log("");
+    console.log(`${c.gray("id")}       ${c.indigo(run.id)}`);
+    console.log(`${c.gray("task")}     ${c.white(run.task)}`);
+    if (run.repo) console.log(`${c.gray("repo")}     ${c.white(run.repo)}`);
+    console.log(`${c.gray("engine")}   ${c.white(run.engine)}`);
+    console.log(`${c.gray("status")}   ${statusLabel(run.status)}`);
+    if (run.result?.summary) console.log(`${c.gray("summary")}  ${c.white(run.result.summary)}`);
+    if (run.error) console.log(`${c.gray("error")}    ${c.red(run.error)}`);
+    console.log("");
+  } catch (e) {
+    handleErr(e);
+  }
 }
 
 export async function stopCommand(id: string): Promise<void> {
-  const a = findAgent(id);
-  const spin = new Spinner(`Stopping ${c.indigo(a.id)} and tearing down sandbox…`).start();
-  await sleep(800);
-  spin.succeed(`Stopped ${c.indigo(a.id)} ${c.dim("· sandbox destroyed")}`);
-  previewNotice("Stopping agents");
+  try {
+    await cancelRun(id);
+    console.log(`${symbols.check} Canceled ${c.indigo(id)} ${c.dim("· sandbox torn down")}`);
+  } catch (e) {
+    handleErr(e);
+  }
 }

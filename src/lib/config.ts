@@ -23,7 +23,7 @@ export function apiUrl(): string {
   return (
     process.env.KURTEL_API_URL ??
     (loadConfig().apiUrl as string | undefined) ??
-    "https://app.kurtel.ai"
+    "htt"
   );
 }
 

@@ -7,6 +7,7 @@ import { startSession } from "./session/repl.js";
 import { runCommand } from "./commands/run.js";
 import { loginCommand, logoutCommand, whoamiCommand } from "./commands/auth.js";
 import { agentsCommand } from "./commands/agents.js";
+import { runsCommand } from "./commands/runs.js";
 import { logsCommand, statusCommand, stopCommand } from "./commands/runtime.js";
 import { configCommand } from "./commands/config.js";
 import { initCommand, doctorCommand } from "./commands/project.js";
@@ -35,12 +36,17 @@ program
   .command("run")
   .description("Launch a cloud agent on a task")
   .argument("[task...]", "What you want the agent to do")
-  .option("-r, --repo <repo>", "Target repository")
+  .option("-r, --repo <repo>", "Target repository (owner/name or URL)")
   .option("-b, --branch <branch>", "Base branch", "main")
-  .option("-d, --detach", "Launch without attaching to logs", false)
+  .option("-e, --engine <engine>", "Engine: claude-code | codex")
   .action(async (taskParts: string[], opts) => {
     await runCommand((taskParts ?? []).join(" "), opts);
   });
+
+program
+  .command("runs")
+  .description("List your recent runs")
+  .action(() => runsCommand());
 
 program
   .command("agents")
@@ -50,14 +56,15 @@ program
 
 program
   .command("logs")
-  .description("Stream an agent's logs")
-  .argument("<id>", "Agent id (e.g. agent-7f3a)")
-  .action(async (id: string) => logsCommand(id));
+  .description("Stream a run's logs")
+  .argument("<id>", "Run id")
+  .option("-f, --follow", "Keep streaming until the run finishes", false)
+  .action(async (id: string, opts) => logsCommand(id, opts));
 
 program
   .command("status")
-  .description("Show an agent's status")
-  .argument("<id>", "Agent id")
+  .description("Show a run's status")
+  .argument("<id>", "Run id")
   .action((id: string) => statusCommand(id));
 
 program
