@@ -73,6 +73,7 @@ export interface Run {
   created_at: string;
   updated_at: string;
   finished_at?: string | null;
+  model: string | null;
 }
 
 async function authed<T>(
@@ -115,7 +116,7 @@ export function verifyToken(): Promise<{
 }
 
 export function createRun(input: {
-  task: string; repo?: string; branch?: string; engine?: string;
+  task: string; repo?: string; branch?: string; engine?: string; model?: string;
 }): Promise<Run> {
   return authed("POST", "/api/runs", input);
 }

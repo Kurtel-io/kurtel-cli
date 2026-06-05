@@ -52,6 +52,7 @@ export async function statusCommand(id: string): Promise<void> {
     console.log(`${c.gray("task")}     ${c.white(run.task)}`);
     if (run.repo) console.log(`${c.gray("repo")}     ${c.white(run.repo)}`);
     console.log(`${c.gray("engine")}   ${c.white(run.engine)}`);
+    if (run.model) console.log(`${c.gray("model")}    ${c.white(run.model)}`);
     console.log(`${c.gray("status")}   ${statusLabel(run.status)}`);
     if (run.result?.summary) console.log(`${c.gray("summary")}  ${c.white(run.result.summary)}`);
     if (run.error) console.log(`${c.gray("error")}    ${c.red(run.error)}`);

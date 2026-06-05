@@ -6,6 +6,7 @@ export interface RunOptions {
   repo?: string;
   branch?: string;
   engine?: string;
+  model?: string;
 }
 
 export async function runCommand(

@@ -39,6 +39,7 @@ program
   .option("-r, --repo <repo>", "Target repository (owner/name or URL)")
   .option("-b, --branch <branch>", "Base branch", "main")
   .option("-e, --engine <engine>", "Engine: claude-code | codex")
+  .option("-m, --model <model>", "Model to use (engine-specific, optional)")
   .action(async (taskParts: string[], opts) => {
     await runCommand((taskParts ?? []).join(" "), opts);
   });
