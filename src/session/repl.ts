@@ -1,12 +1,11 @@
 import * as readline from "node:readline";
 import { c, symbols } from "../ui/colors.js";
 import { banner, welcomeBox } from "../ui/banner.js";
-import { Spinner, sleep } from "../ui/spinner.js";
 import { loadConfig } from "../lib/config.js";
 import { agentsCommand } from "../commands/agents.js";
 import { loginCommand } from "../commands/auth.js";
 import { configCommand } from "../commands/config.js";
-import { previewNotice } from "../commands/_shared.js";
+import { runCommand } from "../commands/run.js";
 
 const SLASH_COMMANDS: Array<[string, string]> = [
   ["/help", "Show this help"],
@@ -35,14 +34,62 @@ function printHelp(): void {
   console.log("");
 }
 
-async function launchFromPrompt(task: string): Promise<void> {
-  const id = "agent-" + Math.random().toString(16).slice(2, 6);
-  const spin = new Spinner("Provisioning sandbox & booting agent…").start();
-  await sleep(700);
-  spin.update("Planning approach…");
-  await sleep(700);
-  spin.succeed(`Queued ${c.indigo(id)} for: ${c.white(task)}`);
-  previewNotice("Launching agents");
+// While we're collecting answers via rl.question, the main "line" handler must
+// stand down so it doesn't re-interpret the answers as new commands.
+let asking = false;
+
+function ask(rl: readline.Interface, query: string): Promise<string> {
+  return new Promise((resolve) => {
+    rl.question(query, (answer) => resolve(answer.trim()));
+  });
+}
+
+// Interactive launch: ask for repo / branch / engine / model (with sensible
+// defaults from local config), then hand off to the real run command.
+async function launchFromPrompt(
+  rl: readline.Interface,
+  task: string
+): Promise<void> {
+  const cfg = loadConfig();
+  const defBranch = cfg.defaultBranch || "main";
+  const defEngine = cfg.engine || "claude-code";
+
+  let repo = "";
+  let branch = defBranch;
+  let engine = defEngine;
+  let model = "";
+
+  asking = true;
+  try {
+    console.log("");
+    repo = await ask(
+      rl,
+      `  ${c.gray("repo")}    ${c.dim("(owner/name, empty for none)")} ${c.indigo(symbols.arrow)} `
+    );
+    branch =
+      (await ask(
+        rl,
+        `  ${c.gray("branch")}  ${c.dim(`(default ${defBranch})`)} ${c.indigo(symbols.arrow)} `
+      )) || defBranch;
+    engine =
+      (await ask(
+        rl,
+        `  ${c.gray("engine")}  ${c.dim(`(default ${defEngine})`)} ${c.indigo(symbols.arrow)} `
+      )) || defEngine;
+    model = await ask(
+      rl,
+      `  ${c.gray("model")}   ${c.dim("(optional)")} ${c.indigo(symbols.arrow)} `
+    );
+  } finally {
+    asking = false;
+  }
+
+  await runCommand(task, {
+    repo: repo || undefined,
+    branch,
+    engine,
+    model: model || undefined,
+  });
 }
 
 export async function startSession(model: string): Promise<void> {
@@ -65,6 +112,9 @@ export async function startSession(model: string): Promise<void> {
   rl.prompt();
 
   rl.on("line", async (input) => {
+    // Standing down while collecting answers to /run questions.
+    if (asking) return;
+
     const line = input.trim();
 
     if (line === "") {
@@ -107,15 +157,13 @@ export async function startSession(model: string): Promise<void> {
           rl.resume();
           break;
         case "run":
-          rl.pause();
           if (!arg) {
             console.log(
               `${c.red(symbols.cross)} Usage: ${c.indigo("/run <task>")}`
             );
           } else {
-            await launchFromPrompt(arg);
+            await launchFromPrompt(rl, arg);
           }
-          rl.resume();
           break;
         default:
           console.log(
@@ -128,10 +176,8 @@ export async function startSession(model: string): Promise<void> {
       return;
     }
 
-    // Free text -> treat as a task
-    rl.pause();
-    await launchFromPrompt(line);
-    rl.resume();
+    // Free text -> treat as a task (interactive launch).
+    await launchFromPrompt(rl, line);
     rl.prompt();
   });
 
