@@ -12,7 +12,7 @@ export interface RunOptions {
 export async function runCommand(
   task: string | undefined,
   opts: RunOptions
-): Promise<void> {
+): Promise<string | undefined> {
   if (!task || task.trim() === "") {
     console.log(
       `${c.red(symbols.cross)} Provide a task, e.g. ${c.indigo(
@@ -20,7 +20,7 @@ export async function runCommand(
       )}`
     );
     process.exitCode = 1;
-    return;
+    return undefined;
   }
 
   if (opts.engine && !isEngineName(opts.engine)) {
@@ -30,7 +30,7 @@ export async function runCommand(
       )} or ${c.indigo("codex")}.`
     );
     process.exitCode = 1;
-    return;
+    return undefined;
   }
 
   try {
@@ -39,24 +39,32 @@ export async function runCommand(
       repo: opts.repo,
       branch: opts.branch,
       engine: opts.engine,
+      model: opts.model,
     });
 
     console.log("");
     console.log(`${symbols.check} Launched ${c.indigo(run.id)}`);
     console.log(`${c.gray("task")}    ${c.white(run.task)}`);
     console.log(`${c.gray("engine")}  ${c.white(run.engine)}`);
+    if (run.model) console.log(`${c.gray("model")}   ${c.white(run.model)}`);
     if (run.repo) console.log(`${c.gray("repo")}    ${c.white(run.repo)}`);
     console.log(`${c.gray("status")}  ${c.indigo(run.status)}`);
     console.log("");
-    console.log(`${c.dim("Follow it with")} ${c.indigo(`kurtel logs ${run.id} --follow`)}`);
+    console.log(
+      `${c.dim("Follow it with")} ${c.indigo(`kurtel logs ${run.id} --follow`)}`
+    );
+    return run.id;
   } catch (e) {
     if (e instanceof AuthError) {
       console.log(`${c.red(symbols.cross)} ${e.message}`);
     } else {
       console.log(
-        `${c.red(symbols.cross)} Failed to launch: ${e instanceof Error ? e.message : String(e)}`
+        `${c.red(symbols.cross)} Failed to launch: ${
+          e instanceof Error ? e.message : String(e)
+        }`
       );
     }
     process.exitCode = 1;
+    return undefined;
   }
 }
