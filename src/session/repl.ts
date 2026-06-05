@@ -6,16 +6,26 @@ import { agentsCommand } from "../commands/agents.js";
 import { loginCommand } from "../commands/auth.js";
 import { configCommand } from "../commands/config.js";
 import { runCommand } from "../commands/run.js";
+import { runsCommand } from "../commands/runs.js";
+import { logsCommand, statusCommand, stopCommand } from "../commands/runtime.js";
 
 const SLASH_COMMANDS: Array<[string, string]> = [
   ["/help", "Show this help"],
   ["/run <task>", "Launch a cloud agent on a task"],
+  ["/runs", "List your recent runs"],
+  ["/logs [id]", "Stream a run's logs (defaults to the last one)"],
+  ["/status [id]", "Show a run's status & result"],
+  ["/stop [id]", "Cancel a run and tear down its sandbox"],
   ["/agents", "List active agents"],
   ["/login", "Sign in to Kurtel"],
   ["/config", "Show local configuration"],
   ["/clear", "Clear the screen"],
   ["/exit", "Quit the session"],
 ];
+
+// Remember the most recently launched run so `/logs` and `/status` can default
+// to it without making the user paste an id.
+let lastRunId: string | null = null;
 
 function prompt(): string {
   return `${c.indigo("kurtel")} ${c.indigo(symbols.arrow)} `;
@@ -34,8 +44,6 @@ function printHelp(): void {
   console.log("");
 }
 
-// While we're collecting answers via rl.question, the main "line" handler must
-// stand down so it doesn't re-interpret the answers as new commands.
 let asking = false;
 
 function ask(rl: readline.Interface, query: string): Promise<string> {
@@ -44,8 +52,6 @@ function ask(rl: readline.Interface, query: string): Promise<string> {
   });
 }
 
-// Interactive launch: ask for repo / branch / engine / model (with sensible
-// defaults from local config), then hand off to the real run command.
 async function launchFromPrompt(
   rl: readline.Interface,
   task: string
@@ -84,12 +90,28 @@ async function launchFromPrompt(
     asking = false;
   }
 
-  await runCommand(task, {
+  const id = await runCommand(task, {
     repo: repo || undefined,
     branch,
     engine,
     model: model || undefined,
   });
+
+  if (id) {
+    lastRunId = id;
+    console.log(
+      `${c.dim("In here:")} ${c.indigo("/logs")} ${c.dim("to watch ·")} ${c.indigo("/runs")} ${c.dim("to list")}`
+    );
+  }
+}
+
+function resolveId(arg: string): string | null {
+  if (arg) return arg;
+  if (lastRunId) return lastRunId;
+  console.log(
+    `${c.red(symbols.cross)} No run id given and no recent run. Try ${c.indigo("/runs")}.`
+  );
+  return null;
 }
 
 export async function startSession(model: string): Promise<void> {
@@ -112,7 +134,6 @@ export async function startSession(model: string): Promise<void> {
   rl.prompt();
 
   rl.on("line", async (input) => {
-    // Standing down while collecting answers to /run questions.
     if (asking) return;
 
     const line = input.trim();
@@ -140,6 +161,39 @@ export async function startSession(model: string): Promise<void> {
           console.clear();
           console.log(banner());
           break;
+        case "runs":
+        case "ls":
+          rl.pause();
+          await runsCommand();
+          rl.resume();
+          break;
+        case "logs": {
+          const id = resolveId(arg);
+          if (id) {
+            rl.pause();
+            await logsCommand(id, { follow: true });
+            rl.resume();
+          }
+          break;
+        }
+        case "status": {
+          const id = resolveId(arg);
+          if (id) {
+            rl.pause();
+            await statusCommand(id);
+            rl.resume();
+          }
+          break;
+        }
+        case "stop": {
+          const id = resolveId(arg);
+          if (id) {
+            rl.pause();
+            await stopCommand(id);
+            rl.resume();
+          }
+          break;
+        }
         case "agents":
         case "ps":
           rl.pause();
@@ -176,7 +230,6 @@ export async function startSession(model: string): Promise<void> {
       return;
     }
 
-    // Free text -> treat as a task (interactive launch).
     await launchFromPrompt(rl, line);
     rl.prompt();
   });
@@ -186,12 +239,10 @@ export async function startSession(model: string): Promise<void> {
     process.exit(0);
   });
 
-  // Ctrl+C: confirm-style behavior — first clears line, prompt again.
   rl.on("SIGINT", () => {
     console.log(`\n${c.dim("(use /exit or Ctrl+D to quit)")}`);
     rl.prompt();
   });
 
-  // Touch config so a fresh user has it.
   loadConfig();
 }
