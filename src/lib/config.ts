@@ -21,9 +21,9 @@ export interface KurtelConfig {
 //   KURTEL_API_URL=http://localhost:3000 kurtel login
 export function apiUrl(): string {
   return (
-    process.env.KURTEL_API_URL ??
-    (loadConfig().apiUrl as string | undefined) ??
-    "htt"
+    process.env.KURTEL_API_URL ??              // 1. variable d'env (override)
+    (loadConfig().apiUrl as string | undefined) ?? // 2. clé "apiUrl" du config local
+    "https://kurtel-app.vercel.app/"                     // 3. valeur par défaut codée en dur
   );
 }
 
