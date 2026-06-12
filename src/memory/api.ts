@@ -46,7 +46,11 @@ export function pullPatterns(repo: string, since?: string | null): Promise<{
 export function pushIndex(repo: string, index: CodebaseIndex): Promise<{ ok: boolean }> {
   const digest = {
     ...index,
-    modules: index.modules.map((m) => ({ ...m, exports: m.exports.slice(0, 10) })).slice(0, 3000),
+    modules: index.modules.map((m) => ({
+      ...m,
+      exports: m.exports.slice(0, 10),
+      symbols: (m.symbols ?? []).slice(0, 25).map((sy) => ({ ...sy, calls: sy.calls.slice(0, 15) })),
+    })).slice(0, 3000),
   };
   return authed("PUT", `/api/memory/index${q(repo)}`, digest);
 }

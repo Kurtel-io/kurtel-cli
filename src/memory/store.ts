@@ -34,6 +34,14 @@ export interface RouteEntry {
   framework: string;       // express | fastapi | nest | flask | next | unknown
 }
 
+/** Une fonction/méthode définie dans un fichier, avec ses appels sortants. */
+export interface SymbolNode {
+  name: string;
+  line: number;
+  /** Appels résolus: "chemin/fichier.ts::fonction" (internes au repo). */
+  calls: string[];
+}
+
 export interface ModuleNode {
   /** Chemin relatif du fichier. */
   id: string;
@@ -42,6 +50,8 @@ export interface ModuleNode {
   loc: number;
   /** Degré entrant+sortant — proxy de centralité. */
   degree: number;
+  /** Fonctions définies et leur graphe d'appels (borné). */
+  symbols: SymbolNode[];
 }
 
 export interface CodebaseIndex {

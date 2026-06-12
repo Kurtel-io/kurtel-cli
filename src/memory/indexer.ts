@@ -26,6 +26,12 @@ interface FileFacts {
   exports: string[];
   importSpecs: string[];   // spécificateurs bruts ("./foo", "../lib/bar", "app.models")
   routes: RouteEntry[];
+  /** Fonctions/méthodes définies dans le fichier. */
+  defs: { name: string; line: number }[];
+  /** Imports nommés: nom local → spécificateur source ("chargeCustomer" → "./service"). */
+  namedImports: Record<string, string>;
+  /** Sites d'appel candidats: nom appelé + ligne (résolus en post-passe). */
+  rawCalls: { name: string; line: number }[];
 }
 
 // ── Extraction par fichier ──────────────────────────────────────────────────
@@ -67,24 +73,97 @@ const PY_ROUTE_PATTERNS: RoutePattern[] = [
 
 const NEXT_ROUTE_FILE = /(^|\/)(pages|app)\/(.+?)\/?(route|page|index)?\.(ts|tsx|js|jsx)$/;
 
+const JS_KEYWORDS = new Set([
+  "if", "for", "while", "switch", "catch", "return", "function", "new", "typeof",
+  "await", "async", "import", "export", "require", "console", "constructor",
+  "super", "this", "throw", "delete", "void", "in", "of", "do", "else", "try",
+]);
+const PY_KEYWORDS = new Set([
+  "if", "for", "while", "return", "print", "len", "range", "str", "int", "dict",
+  "list", "set", "tuple", "type", "isinstance", "super", "open", "enumerate",
+]);
+
+function lineOf(src: string, index: number): number {
+  let n = 1;
+  for (let i = 0; i < index; i++) if (src.charCodeAt(i) === 10) n++;
+  return n;
+}
+
 function extractFile(root: string, rel: string, src: string): FileFacts {
   const lines = src.split("\n");
-  const facts: FileFacts = { rel, loc: lines.length, exports: [], importSpecs: [], routes: [] };
+  const facts: FileFacts = {
+    rel, loc: lines.length, exports: [], importSpecs: [], routes: [],
+    defs: [], namedImports: {}, rawCalls: [],
+  };
   const ext = extname(rel);
+  const isPy = ext === ".py";
 
-  if (ext === ".py") {
-    for (const m of src.matchAll(/^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))/gm)) {
-      facts.importSpecs.push(m[1] ?? m[2]);
+  if (isPy) {
+    for (const m of src.matchAll(/^\s*(?:from\s+([\w.]+)\s+import\s+([\w ,]+)|import\s+([\w.]+))/gm)) {
+      facts.importSpecs.push(m[1] ?? m[3]);
+      // from x import a, b → imports nommés
+      if (m[1] && m[2]) {
+        for (const name of m[2].split(",").map((s) => s.trim().split(/\s+as\s+/)[0])) {
+          if (/^\w+$/.test(name)) facts.namedImports[name] = m[1];
+        }
+      }
     }
-    for (const m of src.matchAll(/^(?:def|class)\s+(\w+)/gm)) facts.exports.push(m[1]);
+    for (const m of src.matchAll(/^(?:\s*)(?:async\s+)?def\s+(\w+)/gm)) {
+      facts.exports.push(m[1]);
+      facts.defs.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
+    }
+    for (const m of src.matchAll(/^class\s+(\w+)/gm)) facts.exports.push(m[1]);
   } else {
-    for (const m of src.matchAll(/\bfrom\s+["']([^"']+)["']|\brequire\s*\(\s*["']([^"']+)["']\s*\)/g)) {
-      facts.importSpecs.push(m[1] ?? m[2]);
+    for (const m of src.matchAll(/import\s+(?:type\s+)?(?:(\w+)\s*,?\s*)?(?:{([^}]*)})?\s*from\s+["']([^"']+)["']|\brequire\s*\(\s*["']([^"']+)["']\s*\)/g)) {
+      const spec = m[3] ?? m[4];
+      if (!spec) continue;
+      facts.importSpecs.push(spec);
+      if (m[1]) facts.namedImports[m[1]] = spec; // import défaut
+      if (m[2]) {
+        for (const part of m[2].split(",")) {
+          const name = part.trim().split(/\s+as\s+/).pop()?.trim();
+          if (name && /^\w+$/.test(name)) facts.namedImports[name] = spec;
+        }
+      }
+    }
+    // Définitions: function decl, const fléchée, méthodes de classe.
+    for (const m of src.matchAll(/\b(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)/g)) {
+      facts.defs.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
+    }
+    for (const m of src.matchAll(/\b(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::\s*[^=]+)?=>/g)) {
+      facts.defs.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
+    }
+    for (const m of src.matchAll(/^\s{2,}(?:public\s+|private\s+|protected\s+|static\s+)*(?:async\s+)?(\w+)\s*\([^)]*\)\s*(?::\s*[\w<>[\]| .]+)?\s*{/gm)) {
+      if (!JS_KEYWORDS.has(m[1])) facts.defs.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
     }
     for (const m of src.matchAll(/\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\s+(\w+)/g)) {
       facts.exports.push(m[1]);
     }
   }
+
+  // Dédupe les defs (même nom: garder la première occurrence), tri par ligne.
+  const seen = new Set<string>();
+  facts.defs = facts.defs
+    .sort((a, b) => a.line - b.line)
+    .filter((d) => (seen.has(d.name) ? false : (seen.add(d.name), true)))
+    .slice(0, 40);
+
+  // Sites d'appel candidats: identifiant suivi de "(", hors mots-clés.
+  const kw = isPy ? PY_KEYWORDS : JS_KEYWORDS;
+  let count = 0;
+  for (const m of src.matchAll(/(?<![\w.])([A-Za-z_]\w{2,})\s*\(/g)) {
+    if (kw.has(m[1])) continue;
+    facts.rawCalls.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
+    if (++count >= 800) break;
+  }
+  // Appels qualifiés "Prefix.method(" → candidat "Prefix." (résolu vers la
+  // classe/module importé en post-passe; le point final marque le cas qualifié).
+  for (const m of src.matchAll(/(?<![\w.])([A-Z]\w{2,})\.\w+\s*\(/g)) {
+    if (kw.has(m[1])) continue;
+    facts.rawCalls.push({ name: m[1] + ".", line: lineOf(src, m.index ?? 0) });
+    if (++count >= 1000) break;
+  }
+  facts.rawCalls.sort((a, b) => a.line - b.line);
 
   // Routes par appel/décorateur, avec n° de ligne — patterns du bon langage uniquement.
   const routePatterns = ext === ".py" ? PY_ROUTE_PATTERNS : JS_ROUTE_PATTERNS;
@@ -113,7 +192,7 @@ function extractFile(root: string, rel: string, src: string): FileFacts {
 
 // ── Résolution d'imports internes (TS/JS relatifs + Python par module path) ──
 
-function resolveImports(all: Map<string, FileFacts>): Map<string, string[]> {
+function buildResolver(all: Map<string, FileFacts>): (rel: string, spec: string) => string | undefined {
   const byNoExt = new Map<string, string>();
   for (const rel of all.keys()) {
     const noExt = rel.replace(/\.(ts|tsx|js|jsx|mjs|cjs|py)$/, "");
@@ -121,29 +200,87 @@ function resolveImports(all: Map<string, FileFacts>): Map<string, string[]> {
     if (noExt.endsWith("/index")) byNoExt.set(noExt.slice(0, -"/index".length), rel);
     if (noExt.endsWith("/__init__")) byNoExt.set(noExt.slice(0, -"/__init__".length), rel);
   }
+  return (rel: string, spec: string): string | undefined => {
+    if (spec.startsWith(".")) {
+      const base = join(dirname(rel), spec).replace(/\\/g, "/").replace(/\.(js|ts|tsx|jsx)$/, "");
+      return byNoExt.get(base);
+    }
+    if (spec.includes(".") && extname(rel) === ".py") {
+      return byNoExt.get(spec.replace(/\./g, "/"));
+    }
+    const cleaned = spec.replace(/^@\//, "src/").replace(/^~\//, "src/");
+    return byNoExt.get(cleaned);
+  };
+}
 
+function resolveImports(all: Map<string, FileFacts>): Map<string, string[]> {
+  const resolve = buildResolver(all);
   const resolved = new Map<string, string[]>();
   for (const [rel, facts] of all) {
     const targets: string[] = [];
     for (const spec of facts.importSpecs) {
-      let candidate: string | undefined;
-      if (spec.startsWith(".")) {
-        // relatif TS/JS
-        const base = join(dirname(rel), spec).replace(/\\/g, "/").replace(/\.(js|ts|tsx|jsx)$/, "");
-        candidate = byNoExt.get(base);
-      } else if (spec.includes(".") && extname(rel) === ".py") {
-        // module python "app.services.billing" → app/services/billing.py
-        candidate = byNoExt.get(spec.replace(/\./g, "/"));
-      } else {
-        // alias absolu fréquent: "src/lib/foo", "@/lib/foo"
-        const cleaned = spec.replace(/^@\//, "src/").replace(/^~\//, "src/");
-        candidate = byNoExt.get(cleaned);
-      }
+      const candidate = resolve(rel, spec);
       if (candidate && candidate !== rel) targets.push(candidate);
     }
     resolved.set(rel, [...new Set(targets)]);
   }
   return resolved;
+}
+
+// ── Graphe d'appels: résolution des sites d'appel en arêtes symbole→symbole ──
+
+const MAX_SYMBOLS_PER_FILE = 25;
+const MAX_CALLS_PER_SYMBOL = 15;
+
+function buildSymbols(
+  all: Map<string, FileFacts>,
+  resolve: (rel: string, spec: string) => string | undefined
+): Map<string, { name: string; line: number; calls: string[] }[]> {
+  const defNames = new Map<string, Set<string>>();
+  const exportNames = new Map<string, Set<string>>();
+  for (const [rel, f] of all) {
+    defNames.set(rel, new Set(f.defs.map((d) => d.name)));
+    exportNames.set(rel, new Set(f.exports));
+  }
+
+  const out = new Map<string, { name: string; line: number; calls: string[] }[]>();
+  for (const [rel, f] of all) {
+    const locals = defNames.get(rel)!;
+    const symbols = f.defs.slice(0, MAX_SYMBOLS_PER_FILE).map((d) => ({ ...d, calls: [] as string[] }));
+    // Pseudo-symbole pour les appels hors fonction (handlers de routes inline,
+    // initialisation module) — c'est là que vivent les arêtes des fichiers routes.
+    const topLevel = { name: "(module)", line: 0, calls: [] as string[] };
+
+    const resolveCall = (raw: string): string | null => {
+      const qualified = raw.endsWith(".");
+      const name = qualified ? raw.slice(0, -1) : raw;
+      if (!qualified && locals.has(name)) return `${rel}::${name}`;
+      const spec = f.namedImports[name];
+      if (spec) {
+        const file = resolve(rel, spec);
+        if (file && file !== rel && (defNames.get(file)?.has(name) || exportNames.get(file)?.has(name))) {
+          return `${file}::${name}`;
+        }
+      }
+      return null;
+    };
+
+    for (const call of f.rawCalls) {
+      let caller: { name: string; line: number; calls: string[] } = topLevel;
+      for (const s of symbols) {
+        if (s.line <= call.line) caller = s;
+        else break;
+      }
+      if (caller.name === call.name || caller.calls.length >= MAX_CALLS_PER_SYMBOL) continue;
+      const target = resolveCall(call.name);
+      if (target && target !== `${rel}::${caller.name}` && !caller.calls.includes(target)) {
+        caller.calls.push(target);
+      }
+    }
+
+    out.set(rel, topLevel.calls.length ? [topLevel, ...symbols] : symbols);
+  }
+  return out;
 }
 
 // ── Parcours ────────────────────────────────────────────────────────────────
@@ -179,6 +316,7 @@ export function buildIndex(root: string, onProgress?: (n: number) => void): Code
   }
 
   const imports = resolveImports(files);
+  const symbolMap = buildSymbols(files, buildResolver(files));
   const inDegree = new Map<string, number>();
   for (const targets of imports.values()) {
     for (const t of targets) inDegree.set(t, (inDegree.get(t) ?? 0) + 1);
@@ -193,6 +331,7 @@ export function buildIndex(root: string, onProgress?: (n: number) => void): Code
         imports: out,
         loc: f.loc,
         degree: out.length + (inDegree.get(rel) ?? 0),
+        symbols: symbolMap.get(rel) ?? [],
       };
     })
     .sort((a, b) => a.id.localeCompare(b.id)); // tri stable → déterminisme

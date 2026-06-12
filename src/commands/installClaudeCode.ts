@@ -48,6 +48,18 @@ The user said: "$ARGUMENTS"
 - Otherwise → run \`kurtel memory status --json\` and present a one-line summary
 Relay the result conversationally. Never paste raw JSON to the user.
 `,
+  "impact.md": `---
+description: Blast radius of changing a file or function (who breaks if I touch X)
+allowed-tools: Bash(kurtel impact:*)
+---
+The user wants the impact of changing: "$ARGUMENTS"
+Run \`kurtel impact $ARGUMENTS --json\` with the Bash tool, then present:
+1. Direct vs transitive dependent counts.
+2. The dependency layers (depth 1 first) as a short readable list.
+3. The reverse call chain if present (which functions call the target).
+4. Routes in the blast radius — these are user-facing surfaces, flag them clearly.
+If the command says the target was not found, suggest the file::function syntax.
+`,
   "status.md": `---
 description: Show Kurtel memory status for this repo
 allowed-tools: Bash(kurtel memory status:*)

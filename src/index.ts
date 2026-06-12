@@ -15,6 +15,7 @@ import { onboardCommand } from "./commands/onboard.js";
 import { memoryCommand } from "./commands/memory.js";
 import { installClaudeCodeCommand, uninstallClaudeCodeCommand } from "./commands/installClaudeCode.js";
 import { hookCommand } from "./commands/hook.js";
+import { impactCommand } from "./commands/impact.js";
 
 const program = new Command();
 
@@ -140,6 +141,14 @@ program
   .option("--json", "Machine-readable output (used by /kurtel:onboard)", false)
   .option("--local", "Skip cloud upload — index stays on disk", false)
   .action(async (opts) => onboardCommand(opts));
+
+program
+  .command("impact")
+  .description("Blast radius of changing a file or function (reverse imports + call graph)")
+  .argument("[target...]", "file path, file::function, or unique function name")
+  .option("--json", "Machine-readable output", false)
+  .option("--depth <n>", "Max BFS depth (default 4)")
+  .action(async (parts: string[], opts) => impactCommand((parts ?? []).join(" "), opts));
 
 program
   .command("memory")

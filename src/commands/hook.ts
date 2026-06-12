@@ -9,6 +9,7 @@ import {
   queueTelemetry,
 } from "../memory/store.js";
 import { compileCapsule, compileZoneCapsule, findSimilarRoutes } from "../memory/capsule.js";
+import { resolveTarget, computeImpact } from "../memory/impact.js";
 import { syncInBackground } from "../memory/sync.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +171,27 @@ function onPostToolUse(root: string, input: HookInput): void {
     }
     state.session_zones[sid] = [...seen, zone];
     saveMemoryState(root, state);
+  }
+
+  // 3. Fichier à fort couplage: une ligne d'impact, la même vue que le dev.
+  if (index) {
+    const mod = index.modules.find((m) => m.id === filePath);
+    const isHot = mod && (mod.degree >= 8 || index.god_nodes.some((g) => g.id === filePath));
+    if (isHot && !seen.has("impact:" + filePath)) {
+      const t = resolveTarget(index, filePath);
+      if (t) {
+        const r = computeImpact(index, t, 3);
+        if (r.transitive > 0) {
+          messages.push(
+            `[Kurtel impact] ${filePath}: ${r.direct} direct dependents, ${r.transitive} transitive (≤3 hops)` +
+            (r.affectedRoutes.length ? ` — routes in blast radius: ${r.affectedRoutes.slice(0, 3).map((x) => x.path).join(", ")}` : "") +
+            `. Check dependents before changing signatures; run \`kurtel impact ${filePath} --json\` for the full set.`
+          );
+          state.session_zones[sid] = [...(state.session_zones[sid] ?? []), "impact:" + filePath];
+          saveMemoryState(root, state);
+        }
+      }
+    }
   }
 
   if (messages.length) emitContext("PostToolUse", messages.join("\n\n"));
