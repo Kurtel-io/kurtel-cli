@@ -11,6 +11,10 @@ import { runsCommand } from "./commands/runs.js";
 import { logsCommand, statusCommand, stopCommand } from "./commands/runtime.js";
 import { configCommand } from "./commands/config.js";
 import { initCommand, doctorCommand } from "./commands/project.js";
+import { onboardCommand } from "./commands/onboard.js";
+import { memoryCommand } from "./commands/memory.js";
+import { installClaudeCodeCommand, uninstallClaudeCodeCommand } from "./commands/installClaudeCode.js";
+import { hookCommand } from "./commands/hook.js";
 
 const program = new Command();
 
@@ -106,6 +110,50 @@ program
   .command("doctor")
   .description("Check your environment")
   .action(() => doctorCommand());
+
+// ── Memory & Claude Code integration ─────────────────────────────────────────
+
+program
+  .command("install")
+  .description("Install a Kurtel integration (claude-code)")
+  .argument("<target>", "Integration target: claude-code")
+  .action(async (target: string) => {
+    if (target === "claude-code") return installClaudeCodeCommand();
+    console.log(`${c.red(symbols.cross)} Unknown target ${c.white(target)}. Try ${c.indigo("claude-code")}.`);
+    process.exitCode = 1;
+  });
+
+program
+  .command("uninstall")
+  .description("Remove a Kurtel integration (claude-code)")
+  .argument("<target>", "Integration target: claude-code")
+  .action(async (target: string) => {
+    if (target === "claude-code") return uninstallClaudeCodeCommand();
+    console.log(`${c.red(symbols.cross)} Unknown target ${c.white(target)}.`);
+    process.exitCode = 1;
+  });
+
+program
+  .command("onboard")
+  .alias("setup")
+  .description("Index this codebase and activate Kurtel memory")
+  .option("--json", "Machine-readable output (used by /kurtel:onboard)", false)
+  .option("--local", "Skip cloud upload — index stays on disk", false)
+  .action(async (opts) => onboardCommand(opts));
+
+program
+  .command("memory")
+  .description("Inspect or toggle Kurtel memory (status | on | off | sync | patterns)")
+  .argument("[action]", "status | on | off | sync | patterns", "status")
+  .option("--json", "Machine-readable output", false)
+  .option("--quiet", "No spinner/log output (used by background sync)", false)
+  .action(async (action, opts) => memoryCommand(action, opts));
+
+// Appelée par Claude Code via les hooks — pas par un humain. Cachée du help.
+program
+  .command("hook", { hidden: true })
+  .argument("<event>", "session-start | user-prompt-submit | post-tool-use | session-end")
+  .action(async (event: string) => hookCommand(event));
 
 async function main() {
   try {
