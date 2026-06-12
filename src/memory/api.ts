@@ -3,14 +3,13 @@ import { AuthError } from "../lib/api.js";
 import type { CodebaseIndex, DarwinPattern, TelemetryEvent } from "./store.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// API mémoire — toujours via le backend Kurtel (qui parle à Supabase avec la
-// service key), jamais Supabase en direct depuis le CLI : le token CLI existant
-// suffit, pas d'anon key à distribuer, et la RLS reste un détail serveur.
-//
-// Endpoints attendus côté backend (cf. INTEGRATION.md):
-//   GET    /api/memory/:repo/patterns?since=<iso>     → { patterns, synced_at }
-//   PUT    /api/memory/:repo/index                    → { ok }
-//   POST   /api/memory/:repo/telemetry                → { ok }
+// REMPLACE src/memory/api.ts du livrable précédent.
+// Changement: repo passé en query param (?repo=owner/name) au lieu d'un segment
+// de path — un "/" encodé dans un segment dynamique Next.js/Vercel est fragile.
+// Endpoints implémentés côté kurtel-app:
+//   GET  /api/memory/patterns?repo=...&since=...
+//   PUT  /api/memory/index?repo=...
+//   POST /api/memory/telemetry?repo=...
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function authed<T>(method: "GET" | "PUT" | "POST", path: string, body?: unknown): Promise<T> {
@@ -31,30 +30,28 @@ async function authed<T>(method: "GET" | "PUT" | "POST", path: string, body?: un
   return data as T;
 }
 
-const enc = (repo: string) => encodeURIComponent(repo);
+const q = (repo: string, extra: Record<string, string> = {}) =>
+  "?" + new URLSearchParams({ repo, ...extra }).toString();
 
-/** Pull delta de la mémoire darwinienne (patterns) pour ce repo. */
+/** Pull delta de la mémoire darwinienne (repo_skills côté backend). */
 export function pullPatterns(repo: string, since?: string | null): Promise<{
   patterns: DarwinPattern[];
   synced_at: string;
-  /** true = réponse delta (merge), false = snapshot complet (replace). */
   delta: boolean;
 }> {
-  const q = since ? `?since=${encodeURIComponent(since)}` : "";
-  return authed("GET", `/api/memory/${enc(repo)}/patterns${q}`);
+  return authed("GET", `/api/memory/patterns${q(repo, since ? { since } : {})}`);
 }
 
-/** Push de la mémoire de codebase (digest, jamais le code source) pour l'app web. */
+/** Push de la mémoire de codebase (digest, jamais le code source). */
 export function pushIndex(repo: string, index: CodebaseIndex): Promise<{ ok: boolean }> {
-  // On n'envoie pas le graphe complet module-par-module si énorme: digest borné.
   const digest = {
     ...index,
     modules: index.modules.map((m) => ({ ...m, exports: m.exports.slice(0, 10) })).slice(0, 3000),
   };
-  return authed("PUT", `/api/memory/${enc(repo)}/index`, digest);
+  return authed("PUT", `/api/memory/index${q(repo)}`, digest);
 }
 
-/** Push asynchrone de la télémétrie d'usage des patterns (signal de fitness). */
+/** Push asynchrone de la télémétrie d'usage des patterns. */
 export function pushTelemetry(repo: string, events: TelemetryEvent[]): Promise<{ ok: boolean }> {
-  return authed("POST", `/api/memory/${enc(repo)}/telemetry`, { events });
+  return authed("POST", `/api/memory/telemetry${q(repo)}`, { events });
 }
