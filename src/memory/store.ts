@@ -56,6 +56,8 @@ export interface ModuleNode {
 
 export interface CodebaseIndex {
   version: 1;
+  /** Moteur d'extraction utilisé + nb de fichiers retombés en regex. */
+  parser?: { engine: "tree-sitter" | "regex"; regex_fallbacks: number };
   repo: string;            // owner/name si détectable, sinon basename
   commit: string;          // HEAD au moment de l'index
   generated_at: string;

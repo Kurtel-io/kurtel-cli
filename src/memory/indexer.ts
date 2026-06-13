@@ -3,6 +3,7 @@ import { join, relative, extname, dirname, sep } from "node:path";
 import { execSync } from "node:child_process";
 import type { CodebaseIndex, ModuleNode, RouteEntry } from "./store.js";
 import { repoFullName } from "./store.js";
+import { extractFileAst, nextRouteFor } from "./ast.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Indexeur structurel — 100% local, 0 token, déterministe (même input → même
@@ -20,7 +21,7 @@ const IGNORE_DIRS = new Set([
 // Filtrage anti-bruit (la leçon Graphify) : on indexe le code, pas les assets/config.
 const IGNORE_FILES = /\.(min\.js|d\.ts|test\.[jt]sx?|spec\.[jt]sx?|stories\.[jt]sx?)$|(^|\/)(conftest|setup)\.py$/;
 
-interface FileFacts {
+export interface FileFacts {
   rel: string;
   loc: number;
   exports: string[];
@@ -28,10 +29,10 @@ interface FileFacts {
   routes: RouteEntry[];
   /** Fonctions/méthodes définies dans le fichier. */
   defs: { name: string; line: number }[];
-  /** Imports nommés: nom local → spécificateur source ("chargeCustomer" → "./service"). */
-  namedImports: Record<string, string>;
-  /** Sites d'appel candidats: nom appelé + ligne (résolus en post-passe). */
-  rawCalls: { name: string; line: number }[];
+  /** Imports nommés: nom local → {spec, orig}. orig = nom exporté côté cible (gère les alias). */
+  namedImports: Record<string, { spec: string; orig: string } | string>;
+  /** Sites d'appel candidats. `owner` (voie AST): ligne de la def englobante, 0 = top-level. */
+  rawCalls: { name: string; line: number; owner?: number }[];
 }
 
 // ── Extraction par fichier ──────────────────────────────────────────────────
@@ -70,8 +71,6 @@ const PY_ROUTE_PATTERNS: RoutePattern[] = [
     path: (m) => m[2],
   },
 ];
-
-const NEXT_ROUTE_FILE = /(^|\/)(pages|app)\/(.+?)\/?(route|page|index)?\.(ts|tsx|js|jsx)$/;
 
 const JS_KEYWORDS = new Set([
   "if", "for", "while", "switch", "catch", "return", "function", "new", "typeof",
@@ -180,13 +179,6 @@ function extractFile(root: string, rel: string, src: string): FileFacts {
     }
   }
 
-  // Routes par convention de fichier (Next.js app/pages router).
-  const nm = rel.replace(/\\/g, "/").match(NEXT_ROUTE_FILE);
-  if (nm) {
-    const urlPath = "/" + nm[3].replace(/\[(\w+)\]/g, ":$1").replace(/\/index$/, "");
-    facts.routes.push({ method: "*", path: urlPath, file: rel, line: 1, framework: "next" });
-  }
-
   return facts;
 }
 
@@ -255,21 +247,28 @@ function buildSymbols(
       const qualified = raw.endsWith(".");
       const name = qualified ? raw.slice(0, -1) : raw;
       if (!qualified && locals.has(name)) return `${rel}::${name}`;
-      const spec = f.namedImports[name];
-      if (spec) {
+      const entry = f.namedImports[name];
+      if (entry) {
+        const spec = typeof entry === "string" ? entry : entry.spec;
+        const orig = typeof entry === "string" ? name : entry.orig; // alias → nom exporté côté cible
         const file = resolve(rel, spec);
-        if (file && file !== rel && (defNames.get(file)?.has(name) || exportNames.get(file)?.has(name))) {
-          return `${file}::${name}`;
+        if (file && file !== rel && (defNames.get(file)?.has(orig) || exportNames.get(file)?.has(orig))) {
+          return `${file}::${orig}`;
         }
       }
       return null;
     };
 
+    const byLine = new Map(symbols.map((s) => [s.line, s]));
     for (const call of f.rawCalls) {
       let caller: { name: string; line: number; calls: string[] } = topLevel;
-      for (const s of symbols) {
-        if (s.line <= call.line) caller = s;
-        else break;
+      if (call.owner !== undefined) {
+        caller = call.owner === 0 ? topLevel : (byLine.get(call.owner) ?? topLevel);
+      } else {
+        for (const s of symbols) {
+          if (s.line <= call.line) caller = s;
+          else break;
+        }
       }
       if (caller.name === call.name || caller.calls.length >= MAX_CALLS_PER_SYMBOL) continue;
       const target = resolveCall(call.name);
@@ -304,13 +303,22 @@ function* walk(dir: string, root: string): Generator<string> {
 
 // ── Construction de l'index ─────────────────────────────────────────────────
 
-export function buildIndex(root: string, onProgress?: (n: number) => void): CodebaseIndex {
+export async function buildIndex(root: string, onProgress?: (n: number) => void): Promise<CodebaseIndex> {
   const files = new Map<string, FileFacts>();
   let n = 0;
+  let regexFallbacks = 0;
   for (const rel of walk(root, root)) {
     try {
       const src = readFileSync(join(root, rel), "utf8");
-      files.set(rel, extractFile(root, rel, src));
+      const ast = await extractFileAst(rel, src, extname(rel));
+      if (ast) {
+        files.set(rel, ast);
+      } else {
+        files.set(rel, extractFile(root, rel, src));
+        regexFallbacks++;
+      }
+      const next = nextRouteFor(rel);
+      if (next) files.get(rel)!.routes.push(next);
       if (onProgress && ++n % 50 === 0) onProgress(n);
     } catch { /* binaire/illisible: skip */ }
   }
@@ -363,6 +371,7 @@ export function buildIndex(root: string, onProgress?: (n: number) => void): Code
 
   return {
     version: 1,
+    parser: { engine: regexFallbacks === files.size ? "regex" : "tree-sitter", regex_fallbacks: regexFallbacks },
     repo: repoFullName(root),
     commit,
     generated_at: new Date().toISOString(),
