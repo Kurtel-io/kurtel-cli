@@ -1,6 +1,6 @@
 {
   "name": "@kurtel/cli",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Launch self-improving coding agents in the cloud — the Kurtel CLI.",
   "type": "module",
   "bin": {
