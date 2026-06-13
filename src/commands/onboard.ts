@@ -19,7 +19,7 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
   // 1. Index structurel — local, déterministe, 0 token.
   const spin = opts.json ? null : new Spinner("Indexing codebase (local, deterministic)…").start();
   const index = await buildIndex(root, (n) => {
-    if (spin) spin.text = `Indexing codebase… ${n} files`;
+    spin?.update(`Indexing codebase… ${n} files`);
   });
   saveIndex(root, index);
   spin?.succeed(`Indexed ${index.files_indexed} files · ${index.routes.length} routes · ${index.god_nodes.length} god nodes`);
