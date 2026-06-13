@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 
@@ -175,6 +176,68 @@ export function indexPath(root: string): string {
 
 export function reportPath(root: string): string {
   return join(root, ".kurtel", "REPORT.md");
+}
+
+// ── Embeddings sémantiques ──
+//   ~/.kurtel/vectors/{vectors.bin,vocab.txt}     ← table alignée, partagée entre repos
+//   ~/.kurtel/cache/<slug>/embeddings.{bin,json}  ← un vecteur par module (par repo)
+
+export function vectorsPathsIn(dir: string): { bin: string; vocab: string } {
+  return { bin: join(dir, "vectors.bin"), vocab: join(dir, "vocab.txt") };
+}
+
+/** Override par l'utilisateur (import manuel / air-gapped) — prioritaire sur la table bundlée. */
+export function userVectorsDir(): string {
+  return join(homedir(), ".kurtel", "vectors");
+}
+
+/** Table livrée AVEC le package npm: dist/memory/store.js → ../../assets/vectors
+ *  (même calcul en dev via tsx: src/memory/store.ts → ../../assets/vectors à la racine repo). */
+function bundledVectorsDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "vectors");
+}
+
+/** Chemins de LECTURE: override utilisateur si présent, sinon la table bundlée. */
+export function vectorsReadPaths(): { bin: string; vocab: string } {
+  const user = vectorsPathsIn(userVectorsDir());
+  if (existsSync(user.bin) && existsSync(user.vocab)) return user;
+  return vectorsPathsIn(bundledVectorsDir());
+}
+
+function embeddingsPaths(root: string): { bin: string; meta: string } {
+  const d = cacheDir(root);
+  return { bin: join(d, "embeddings.bin"), meta: join(d, "embeddings.json") };
+}
+
+export function saveModuleVectors(root: string, mv: { dim: number; ids: string[]; matrix: Float32Array }): void {
+  const { bin, meta } = embeddingsPaths(root);
+  const dir = join(bin, "..");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const buf = Buffer.alloc(mv.matrix.length * 4);
+  for (let i = 0; i < mv.matrix.length; i++) buf.writeFloatLE(mv.matrix[i], i * 4);
+  writeFileSync(bin, buf);
+  writeFileSync(meta, JSON.stringify({ dim: mv.dim, ids: mv.ids }) + "\n", "utf8");
+}
+
+let mvCache: { root: string; map: Map<string, Float32Array> } | null = null;
+
+/** Map id → vecteur. Caché pour ce process (le hook est court-vécu: un chargement). */
+export function loadModuleVectors(root: string): Map<string, Float32Array> | null {
+  if (mvCache && mvCache.root === root) return mvCache.map;
+  const { bin, meta } = embeddingsPaths(root);
+  if (!existsSync(bin) || !existsSync(meta)) return null;
+  try {
+    const { dim, ids } = JSON.parse(readFileSync(meta, "utf8")) as { dim: number; ids: string[] };
+    const buf = readFileSync(bin);
+    const floats = new Float32Array(dim * ids.length);
+    for (let i = 0; i < floats.length; i++) floats[i] = buf.readFloatLE(i * 4);
+    const map = new Map<string, Float32Array>();
+    for (let r = 0; r < ids.length; r++) map.set(ids[r], floats.subarray(r * dim, (r + 1) * dim));
+    mvCache = { root, map };
+    return map;
+  } catch {
+    return null;
+  }
 }
 
 export function loadIndex(root: string): CodebaseIndex | null {

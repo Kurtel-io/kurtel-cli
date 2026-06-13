@@ -10,7 +10,8 @@
     "access": "public"
   },
   "files": [
-    "dist"
+    "dist",
+    "assets/vectors"
   ],
   "engines": {
     "node": ">=18"

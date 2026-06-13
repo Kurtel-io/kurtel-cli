@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { c, symbols } from "../ui/colors.js";
 import { Spinner } from "../ui/spinner.js";
 import { buildIndex, renderReport } from "../memory/indexer.js";
-import { repoRoot, saveIndex, reportPath, loadMemoryCache } from "../memory/store.js";
+import { repoRoot, saveIndex, reportPath, loadMemoryCache, saveModuleVectors } from "../memory/store.js";
+import { embeddingsAvailable, buildModuleVectors } from "../memory/embed.js";
 import { syncIndexUp, syncNow } from "../memory/sync.js";
 
 export interface OnboardOptions {
@@ -23,6 +24,16 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
   });
   saveIndex(root, index);
   spin?.succeed(`Indexed ${index.files_indexed} files · ${index.routes.length} routes · ${index.god_nodes.length} god nodes`);
+
+  // 1b. Vecteurs sémantiques par module — seulement si une table alignée est installée.
+  //     Pont FR→EN pour la sélection de zones. Sinon: silencieux, la capsule reste lexicale.
+  if (embeddingsAvailable()) {
+    const mv = buildModuleVectors(index);
+    if (mv) {
+      saveModuleVectors(root, mv);
+      if (!opts.json) console.log(`${symbols.check} Semantic vectors: ${mv.ids.length} modules embedded (${mv.dim}d)`);
+    }
+  }
 
   // 2. Rapport d'audit — le livrable du jour 0.
   const report = renderReport(index);

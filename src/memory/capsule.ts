@@ -1,5 +1,7 @@
 import type { CodebaseIndex, DarwinPattern, RouteEntry } from "./store.js";
 import { findSimilarRoutes } from "./indexer.js";
+import { embeddingsAvailable, embedTokens, cosine } from "./embed.js";
+import { loadModuleVectors } from "./store.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Capsule — le cœur du produit. À chaque prompt:
@@ -24,10 +26,36 @@ export function tokenize(text: string): string[] {
   )];
 }
 
+// ── Contexte sémantique (optionnel): vecteur de requête + vecteurs modules ──
+//   Construit une fois par capsule. Absent si pas de table → tout retombe lexical.
+
+export interface SemanticContext {
+  q: Float32Array | null;                  // vecteur du prompt (FR)
+  mvec: Map<string, Float32Array> | null;  // id module → vecteur (code EN)
+}
+
+// Le cosinus ne compte qu'au-dessus d'un plancher (sinon tous les modules fuient
+// un peu de signal). Au-dessus, il pèse comme ~2-3 hits lexicaux sur un fort match.
+const SEM_FLOOR = 0.30;
+const SEM_WEIGHT_ZONE = 8;
+const SEM_WEIGHT_ROUTE = 4;
+
+function semScore(sem: SemanticContext | undefined, id: string, weight: number): number {
+  if (!sem?.q || !sem.mvec) return 0;
+  const v = sem.mvec.get(id);
+  if (!v) return 0;
+  const cs = cosine(sem.q, v);
+  return cs > SEM_FLOOR ? (cs - SEM_FLOOR) * weight : 0;
+}
+
 // ── Résolution spatiale: quelles zones du repo l'intention touche-t-elle ? ──
 
-export function resolveZones(index: CodebaseIndex, promptTokens: string[]): string[] {
-  const scores = new Map<string, number>();
+export function resolveZones(index: CodebaseIndex, promptTokens: string[], sem?: SemanticContext): string[] {
+  // Score de zone = MAX du score de ses modules (pas la somme): une zone vaut son
+  // meilleur fichier, sinon les gros dossiers gagnent par accumulation (biais de taille).
+  // Léger tie-break par le 2e meilleur, pour départager deux zones dont le top est à égalité.
+  const best = new Map<string, number>();
+  const second = new Map<string, number>();
   for (const m of index.modules) {
     const hay = m.id.toLowerCase();
     let s = 0;
@@ -36,12 +64,18 @@ export function resolveZones(index: CodebaseIndex, promptTokens: string[]): stri
       const el = e.toLowerCase();
       for (const t of promptTokens) if (el.includes(t)) s += 1;
     }
-    if (s > 0) {
-      const zone = m.id.includes("/") ? m.id.split("/").slice(0, 2).join("/") : m.id;
-      scores.set(zone, (scores.get(zone) ?? 0) + s);
-    }
+    s += semScore(sem, m.id, SEM_WEIGHT_ZONE); // pont FR→EN: surfacé même sans match lexical
+    if (s <= 0) continue;
+    const zone = m.id.includes("/") ? m.id.split("/").slice(0, 2).join("/") : m.id;
+    const b = best.get(zone) ?? 0;
+    if (s > b) { second.set(zone, b); best.set(zone, s); }
+    else if (s > (second.get(zone) ?? 0)) second.set(zone, s);
   }
-  return [...scores.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([z]) => z);
+  return [...best.entries()]
+    .map(([z, b]) => [z, b + 0.1 * (second.get(z) ?? 0)] as [string, number])
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([z]) => z);
 }
 
 // ── Sélection darwinienne: les patterns pertinents pour CETTE tâche ─────────
@@ -74,11 +108,12 @@ export function selectPatterns(
 
 // ── Routes pertinentes pour l'intention (anti-duplication proactive) ────────
 
-export function relevantRoutes(index: CodebaseIndex, promptTokens: string[]): RouteEntry[] {
+export function relevantRoutes(index: CodebaseIndex, promptTokens: string[], sem?: SemanticContext): RouteEntry[] {
   const scored = index.routes.map((r) => {
     const hay = `${r.path} ${r.file}`.toLowerCase();
     let s = 0;
     for (const t of promptTokens) if (hay.includes(t)) s++;
+    s += semScore(sem, r.file, SEM_WEIGHT_ROUTE); // proximité sémantique via le module qui définit la route
     return { r, s };
   });
   return scored.filter((x) => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 6).map((x) => x.r);
@@ -95,14 +130,24 @@ export interface CapsuleResult {
 export function compileCapsule(
   index: CodebaseIndex | null,
   patterns: DarwinPattern[],
-  prompt: string
+  prompt: string,
+  root?: string
 ): CapsuleResult | null {
   const tokens = tokenize(prompt);
   if (!tokens.length) return null;
 
-  const zones = index ? resolveZones(index, tokens) : [];
+  // Contexte sémantique (optionnel, synchrone): pont FR→EN. Silencieux si pas de table.
+  let sem: SemanticContext | undefined;
+  if (index && root && embeddingsAvailable()) {
+    const mvec = loadModuleVectors(root);
+    // On embed les tokens DÉJÀ filtrés (sans stopwords) — averager le prompt brut
+    // diluerait le signal et écraserait la discrimination entre zones.
+    if (mvec) sem = { q: embedTokens(tokens), mvec };
+  }
+
+  const zones = index ? resolveZones(index, tokens, sem) : [];
   const selected = selectPatterns(patterns, tokens, zones);
-  const routes = index ? relevantRoutes(index, tokens) : [];
+  const routes = index ? relevantRoutes(index, tokens, sem) : [];
   const gods = index
     ? index.god_nodes.filter((g) => zones.some((z) => g.id.startsWith(z))).slice(0, 2)
     : [];

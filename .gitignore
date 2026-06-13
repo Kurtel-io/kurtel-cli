@@ -4,3 +4,8 @@ dist/
 .DS_Store
 .kurtel/
 internal_doc/
+*.vec
+bench/runs/
+bench/results.csv
+bench/tasks.json
+bench/

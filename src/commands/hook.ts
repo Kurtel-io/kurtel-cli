@@ -97,7 +97,7 @@ function onPrompt(root: string, input: HookInput): void {
 
   const index = loadIndex(root);
   const cache = loadMemoryCache(root);
-  const capsule = compileCapsule(index, cache.patterns, prompt);
+  const capsule = compileCapsule(index, cache.patterns, prompt, root);
   if (!capsule) return;
 
   emitContext("UserPromptSubmit", capsule.text);

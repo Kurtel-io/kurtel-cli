@@ -1,0 +1,19 @@
+Aligned word-vector table (vectors.bin + vocab.txt)
+===================================================
+
+This directory contains a TRIMMED and QUANTIZED derivative of the fastText
+aligned word vectors (French + English projected into a shared space).
+
+Source:  fastText aligned word vectors
+         https://fasttext.cc/docs/en/aligned-vectors.html
+         Bojanowski et al., "Enriching Word Vectors with Subword Information";
+         Joulin et al., "Loss in Translation: Learning Bilingual Word Mapping
+         with a Retrieval Criterion".
+
+License: Creative Commons Attribution-ShareAlike 3.0 (CC BY-SA 3.0)
+         https://creativecommons.org/licenses/by-sa/3.0/
+
+This derivative (top-N frequent words, L2-normalized, int8-quantized into a
+compact binary) is likewise distributed under CC BY-SA 3.0. This license
+applies ONLY to the data files in this directory (vectors.bin, vocab.txt),
+not to the rest of the Kurtel CLI, which is a separate work.

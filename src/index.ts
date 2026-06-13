@@ -152,11 +152,14 @@ program
 
 program
   .command("memory")
-  .description("Inspect or toggle Kurtel memory (status | on | off | sync | patterns)")
-  .argument("[action]", "status | on | off | sync | patterns", "status")
+  .description("Inspect or toggle Kurtel memory (status | on | off | sync | patterns | vectors)")
+  .argument("[action]", "status | on | off | sync | patterns | vectors", "status")
+  .argument("[args...]", "extra args (e.g. `vectors import <file.vec>`)")
   .option("--json", "Machine-readable output", false)
   .option("--quiet", "No spinner/log output (used by background sync)", false)
-  .action(async (action, opts) => memoryCommand(action, opts));
+  .option("--max <n>", "Max words to import (vectors import)")
+  .option("--out <dir>", "Output dir for the built table (vectors import; default ~/.kurtel/vectors)")
+  .action(async (action, args, opts) => memoryCommand(action, opts, args));
 
 // Appelée par Claude Code via les hooks — pas par un humain. Cachée du help.
 program

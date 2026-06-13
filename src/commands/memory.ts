@@ -8,6 +8,7 @@ import {
   setMemoryEnabled,
 } from "../memory/store.js";
 import { syncNow } from "../memory/sync.js";
+import { importVecFile, vectorsInfo } from "../memory/embed.js";
 
 function ago(iso: string | null): string {
   if (!iso) return "never";
@@ -21,11 +22,42 @@ function ago(iso: string | null): string {
 
 export async function memoryCommand(
   action?: string,
-  opts: { quiet?: boolean; json?: boolean } = {}
+  opts: { quiet?: boolean; json?: boolean; max?: string; out?: string } = {},
+  args: string[] = []
 ): Promise<void> {
   const root = repoRoot();
 
   switch (action) {
+    case "vectors": {
+      const sub = args[0] ?? "status";
+      if (sub === "import") {
+        const file = args[1];
+        if (!file) {
+          console.log(`${c.red(symbols.cross)} Usage: ${c.indigo("kurtel memory vectors import <file.vec>")} ${c.dim("[--max N]")}`);
+          process.exitCode = 1;
+          return;
+        }
+        const spin = opts.quiet ? null : new Spinner(`Importing aligned vectors from ${file}…`).start();
+        try {
+          const res = await importVecFile(file, {
+            max: opts.max ? Number(opts.max) : undefined,
+            outDir: opts.out,
+            onProgress: (n) => spin?.update(`Importing aligned vectors… ${n.toLocaleString()} words`),
+          });
+          spin?.succeed(`Vectors ready · ${res.added.toLocaleString()} new · ${res.total.toLocaleString()} total · ${res.dim}d → ${res.dir}`);
+          console.log(c.dim(`Run \`kurtel onboard\` to embed this repo's modules into the new space.`));
+        } catch (e) {
+          spin?.fail(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+          process.exitCode = 1;
+        }
+        return;
+      }
+      // status
+      const info = vectorsInfo();
+      if (info) console.log(`${c.gray("vectors")}   ${c.white(`${info.words.toLocaleString()} words · ${info.dim}d`)} ${c.dim("(aligned table installed)")}`);
+      else console.log(c.dim("No aligned vectors table. Import one: `kurtel memory vectors import <file.vec>` (e.g. a fastText aligned .vec)."));
+      return;
+    }
     case "on":
       setMemoryEnabled(root, true);
       console.log(`${symbols.check} Kurtel memory ${c.indigo("enabled")} for this repo.`);
