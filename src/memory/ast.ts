@@ -47,6 +47,10 @@ function grammarFor(ext: string): string | null {
     case ".tsx": return "tsx";
     case ".js": case ".jsx": case ".mjs": case ".cjs": return "javascript"; // jsx couvert par la grammaire JS
     case ".py": return "python";
+    case ".java": return "java";
+    case ".go": return "go";
+    case ".rs": return "rust";
+    case ".cs": return "c_sharp";
     default: return null;
   }
 }
@@ -340,6 +344,178 @@ function extractPy(rel: string, src: string, root: TSNode): FileFacts {
   return facts;
 }
 
+// ── Java ─────────────────────────────────────────────────────────────────────
+
+const JAVA_DEF_KINDS = new Set(["method_declaration", "constructor_declaration"]);
+const SPRING_MAPPINGS: Record<string, string> = {
+  GetMapping: "GET", PostMapping: "POST", PutMapping: "PUT",
+  DeleteMapping: "DELETE", PatchMapping: "PATCH", RequestMapping: "*",
+};
+
+function extractJava(rel: string, src: string, root: TSNode): FileFacts {
+  const facts = emptyFacts(rel, src);
+  for (const imp of root.descendantsOfType("import_declaration")) {
+    const id = imp.descendantsOfType("scoped_identifier")[0] ?? imp.namedChildren[0];
+    if (id) {
+      const full = id.text;
+      const cls = full.split(".").pop();
+      facts.importSpecs.push(full);
+      if (cls && /^[A-Z]/.test(cls)) facts.namedImports[cls] = full;
+    }
+  }
+  for (const m of root.descendantsOfType(["method_declaration", "constructor_declaration"])) {
+    const name = m.childForFieldName("name");
+    if (name) { facts.defs.push({ name: name.text, line: line(m) }); facts.exports.push(name.text); }
+    for (const ann of m.descendantsOfType(["annotation", "marker_annotation"])) {
+      const an = ann.childForFieldName("name")?.text;
+      if (an && SPRING_MAPPINGS[an]) {
+        const arg = ann.descendantsOfType("string_literal")[0];
+        facts.routes.push({ method: SPRING_MAPPINGS[an], path: arg ? stripQuotes(arg.text) : "", file: rel, line: line(ann), framework: "spring" });
+      }
+    }
+  }
+  for (const c of root.descendantsOfType(["class_declaration", "interface_declaration", "enum_declaration"])) {
+    const name = c.childForFieldName("name");
+    if (name) facts.exports.push(name.text);
+  }
+  for (const call of root.descendantsOfType("method_invocation")) {
+    const name = call.childForFieldName("name");
+    const obj = call.childForFieldName("object");
+    const owner = enclosingDefLine(call, JAVA_DEF_KINDS, (n) => n.childForFieldName("name"));
+    if (obj && /^[A-Z]/.test(obj.text)) facts.rawCalls.push({ name: obj.text + ".", line: line(call), owner });
+    if (name) facts.rawCalls.push({ name: name.text, line: line(call), owner });
+  }
+  return facts;
+}
+
+// ── Go ───────────────────────────────────────────────────────────────────────
+
+const GO_DEF_KINDS = new Set(["function_declaration", "method_declaration"]);
+
+function extractGo(rel: string, src: string, root: TSNode): FileFacts {
+  const facts = emptyFacts(rel, src);
+  for (const spec of root.descendantsOfType("import_spec")) {
+    const path = spec.childForFieldName("path");
+    if (path) {
+      const p = stripQuotes(path.text);
+      facts.importSpecs.push(p);
+      const pkg = p.split("/").pop();
+      if (pkg) facts.namedImports[pkg] = p;
+    }
+  }
+  for (const fn of root.descendantsOfType(["function_declaration", "method_declaration"])) {
+    const name = fn.childForFieldName("name");
+    if (name) {
+      facts.defs.push({ name: name.text, line: line(fn) });
+      if (/^[A-Z]/.test(name.text)) facts.exports.push(name.text);
+    }
+  }
+  for (const ts of root.descendantsOfType("type_spec")) {
+    const name = ts.childForFieldName("name");
+    if (name && /^[A-Z]/.test(name.text)) facts.exports.push(name.text);
+  }
+  for (const call of root.descendantsOfType("call_expression")) {
+    const fn = call.childForFieldName("function");
+    const owner = enclosingDefLine(call, GO_DEF_KINDS, (n) => n.childForFieldName("name"));
+    if (!fn) continue;
+    if (fn.type === "identifier") {
+      facts.rawCalls.push({ name: fn.text, line: line(call), owner });
+    } else if (fn.type === "selector_expression") {
+      const operand = fn.childForFieldName("operand");
+      if (operand?.type === "identifier") facts.rawCalls.push({ name: operand.text + ".", line: line(call), owner });
+    }
+  }
+  return facts;
+}
+
+// ── Rust ─────────────────────────────────────────────────────────────────────
+
+const RUST_DEF_KINDS = new Set(["function_item"]);
+
+function extractRust(rel: string, src: string, root: TSNode): FileFacts {
+  const facts = emptyFacts(rel, src);
+  for (const use of root.descendantsOfType("use_declaration")) {
+    const full = use.text.replace(/^use\s+/, "").replace(/;$/, "").trim();
+    const parts = full.split("::");
+    if (parts.length >= 2) {
+      const name = parts[parts.length - 1].replace(/[{}\s].*$/, "");
+      const path = parts.slice(0, -1).join("/").replace(/^crate\//, "src/").replace(/^crate$/, "src");
+      facts.importSpecs.push(path);
+      if (/^[a-z_]\w*$/i.test(name)) facts.namedImports[name] = path;
+    }
+  }
+  for (const fn of root.descendantsOfType("function_item")) {
+    const name = fn.childForFieldName("name");
+    if (name) {
+      facts.defs.push({ name: name.text, line: line(fn) });
+      if (fn.children.some((c) => c.type === "visibility_modifier")) facts.exports.push(name.text);
+    }
+  }
+  for (const s of root.descendantsOfType(["struct_item", "enum_item", "trait_item"])) {
+    const name = s.childForFieldName("name");
+    if (name) facts.exports.push(name.text);
+  }
+  for (const call of root.descendantsOfType("call_expression")) {
+    const fn = call.childForFieldName("function");
+    const owner = enclosingDefLine(call, RUST_DEF_KINDS, (n) => n.childForFieldName("name"));
+    if (!fn) continue;
+    if (fn.type === "identifier") {
+      facts.rawCalls.push({ name: fn.text, line: line(call), owner });
+    } else if (fn.type === "scoped_identifier") {
+      const name = fn.descendantsOfType("identifier").pop();
+      if (name) facts.rawCalls.push({ name: name.text, line: line(call), owner });
+    } else if (fn.type === "field_expression") {
+      const field = fn.childForFieldName("field");
+      if (field) facts.rawCalls.push({ name: field.text, line: line(call), owner });
+    }
+  }
+  return facts;
+}
+
+// ── C# ───────────────────────────────────────────────────────────────────────
+
+const CS_DEF_KINDS = new Set(["method_declaration", "constructor_declaration"]);
+const CS_HTTP_ATTRS: Record<string, string> = {
+  HttpGet: "GET", HttpPost: "POST", HttpPut: "PUT", HttpDelete: "DELETE", HttpPatch: "PATCH", Route: "*",
+};
+
+function extractCSharp(rel: string, src: string, root: TSNode): FileFacts {
+  const facts = emptyFacts(rel, src);
+  for (const u of root.descendantsOfType("using_directive")) {
+    const name = u.descendantsOfType("qualified_name")[0] ?? u.descendantsOfType("identifier")[0];
+    if (name) facts.importSpecs.push(name.text);
+  }
+  for (const m of root.descendantsOfType(["method_declaration", "constructor_declaration"])) {
+    const name = m.childForFieldName("name");
+    if (name) { facts.defs.push({ name: name.text, line: line(m) }); facts.exports.push(name.text); }
+    for (const attr of m.descendantsOfType("attribute")) {
+      const an = attr.childForFieldName("name")?.text;
+      if (an && CS_HTTP_ATTRS[an]) {
+        const arg = attr.descendantsOfType("string_literal")[0];
+        facts.routes.push({ method: CS_HTTP_ATTRS[an], path: arg ? stripQuotes(arg.text) : "", file: rel, line: line(attr), framework: "aspnet" });
+      }
+    }
+  }
+  for (const c of root.descendantsOfType(["class_declaration", "interface_declaration", "record_declaration"])) {
+    const name = c.childForFieldName("name");
+    if (name) facts.exports.push(name.text);
+  }
+  for (const call of root.descendantsOfType("invocation_expression")) {
+    const fn = call.childForFieldName("function");
+    const owner = enclosingDefLine(call, CS_DEF_KINDS, (n) => n.childForFieldName("name"));
+    if (!fn) continue;
+    if (fn.type === "identifier") {
+      facts.rawCalls.push({ name: fn.text, line: line(call), owner });
+    } else if (fn.type === "member_access_expression") {
+      const obj = fn.childForFieldName("expression");
+      const name = fn.childForFieldName("name");
+      if (obj?.type === "identifier" && /^[A-Z]/.test(obj.text)) facts.rawCalls.push({ name: obj.text + ".", line: line(call), owner });
+      if (name) facts.rawCalls.push({ name: name.text, line: line(call), owner });
+    }
+  }
+  return facts;
+}
+
 // ── Point d'entrée ───────────────────────────────────────────────────────────
 
 const MAX_DEFS = 40;
@@ -353,7 +529,16 @@ export async function extractFileAst(rel: string, src: string, ext: string): Pro
   try {
     ctx.parser.setLanguage(ctx.lang);
     tree = ctx.parser.parse(src);
-    const facts = ext === ".py" ? extractPy(rel, src, tree.rootNode) : extractJs(rel, src, tree.rootNode);
+    const root = tree.rootNode;
+    let facts: FileFacts;
+    switch (ext) {
+      case ".py": facts = extractPy(rel, src, root); break;
+      case ".java": facts = extractJava(rel, src, root); break;
+      case ".go": facts = extractGo(rel, src, root); break;
+      case ".rs": facts = extractRust(rel, src, root); break;
+      case ".cs": facts = extractCSharp(rel, src, root); break;
+      default: facts = extractJs(rel, src, root); break; // ts/tsx/js/jsx
+    }
 
     // Bornes + dédupe defs (première occurrence par nom), tri par ligne — comme la voie regex.
     const seen = new Set<string>();

@@ -11,7 +11,7 @@ import { extractFileAst, nextRouteFor } from "./ast.js";
 // d'extension propre pour passer à tree-sitter plus tard est extractFile().
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CODE_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py"]);
+const CODE_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".java", ".go", ".rs", ".cs"]);
 
 const IGNORE_DIRS = new Set([
   "node_modules", ".git", "dist", "build", "out", ".next", ".nuxt", "coverage",
