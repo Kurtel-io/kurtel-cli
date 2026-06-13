@@ -25,6 +25,7 @@ const HOOK_EVENTS: { event: string; sub: string }[] = [
 // ── Slash commands (markdown, format Claude Code custom commands) ───────────
 
 const SLASH_COMMANDS: Record<string, string> = {
+  // ── Codebase memory (local) ────────────────────────────────────────────────
   "onboard.md": `---
 description: Index this codebase and activate Kurtel memory (architecture audit + route inventory)
 allowed-tools: Bash(kurtel onboard:*), Read
@@ -37,7 +38,7 @@ Run \`kurtel onboard --json\` with the Bash tool, then:
 Do not re-run indexing if the command fails twice; show the error instead.
 `,
   "memory.md": `---
-description: Toggle or inspect Kurtel memory (on / off / status / sync / patterns)
+description: Toggle or inspect Kurtel memory (on / off / status / sync / patterns / vectors)
 allowed-tools: Bash(kurtel memory:*)
 ---
 The user said: "$ARGUMENTS"
@@ -45,8 +46,15 @@ The user said: "$ARGUMENTS"
 - If it contains "on" or "enable" → run \`kurtel memory on\`
 - If it contains "sync" → run \`kurtel memory sync\`
 - If it contains "pattern" → run \`kurtel memory patterns --json\` and present the patterns as a readable list (rule, confidence, zones, evidence count), sorted by confidence
+- If it contains "vector" → run \`kurtel memory vectors status\` and report whether the cross-lingual table is installed (word count, dimension)
 - Otherwise → run \`kurtel memory status --json\` and present a one-line summary
 Relay the result conversationally. Never paste raw JSON to the user.
+`,
+  "status.md": `---
+description: Show Kurtel memory status for this repo
+allowed-tools: Bash(kurtel memory status:*)
+---
+Run \`kurtel memory status --json\` and summarize in 2-3 lines: memory active or not, index freshness (suggest \`/kurtel:onboard\` if none), number of team patterns loaded and last sync time.
 `,
   "impact.md": `---
 description: Blast radius of changing a file or function (who breaks if I touch X)
@@ -60,11 +68,89 @@ Run \`kurtel impact $ARGUMENTS --json\` with the Bash tool, then present:
 4. Routes in the blast radius — these are user-facing surfaces, flag them clearly.
 If the command says the target was not found, suggest the file::function syntax.
 `,
-  "status.md": `---
-description: Show Kurtel memory status for this repo
-allowed-tools: Bash(kurtel memory status:*)
+
+  // ── Cloud runs (account required) ──────────────────────────────────────────
+  "run.md": `---
+description: Launch a self-improving coding agent in the cloud on a task
+allowed-tools: Bash(kurtel run:*)
 ---
-Run \`kurtel memory status --json\` and summarize in 2-3 lines: memory active or not, index freshness (suggest \`/kurtel:onboard\` if none), number of team patterns loaded and last sync time.
+The user wants to launch a cloud agent for: "$ARGUMENTS"
+Run \`kurtel run $ARGUMENTS\` with the Bash tool (pass through any flags the user included: --repo, --branch, --engine, --model). Then report the run id and how to follow it: \`/kurtel:logs <id>\` or \`/kurtel:runs\`. If the command reports the user is not signed in, tell them to run \`kurtel login\` first.
+`,
+  "runs.md": `---
+description: List your recent cloud runs
+allowed-tools: Bash(kurtel runs:*)
+---
+Run \`kurtel runs\` with the Bash tool and present the recent runs as a short readable list (id, repo, status, age). If not signed in, say so and suggest \`kurtel login\`.
+`,
+  "agents.md": `---
+description: List active cloud agents
+allowed-tools: Bash(kurtel agents:*)
+---
+Run \`kurtel agents\` with the Bash tool and present the active agents concisely (id, repo, status, progress).
+`,
+  "logs.md": `---
+description: Stream a cloud run's logs
+allowed-tools: Bash(kurtel logs:*), Bash(kurtel runs:*)
+---
+The user wants logs for run: "$ARGUMENTS"
+If an id was given, run \`kurtel logs $ARGUMENTS\` (add --follow only if the user asked to follow), then summarize the latest activity and surface any errors clearly. If no id was given, run \`kurtel runs\` first, list the runs, and ask which one.
+`,
+  "run-status.md": `---
+description: Show a specific cloud run's status
+allowed-tools: Bash(kurtel status:*), Bash(kurtel runs:*)
+---
+The user wants the status of run: "$ARGUMENTS"
+If an id was given, run \`kurtel status $ARGUMENTS\` and report it in one line. If no id was given, run \`kurtel runs\` and ask which run.
+`,
+  "stop.md": `---
+description: Stop a cloud agent and tear down its sandbox
+allowed-tools: Bash(kurtel stop:*), Bash(kurtel agents:*)
+---
+The user wants to stop agent: "$ARGUMENTS"
+If an id was given, run \`kurtel stop $ARGUMENTS\` and report the result. If no id was given, run \`kurtel agents\` to list active agents and ask which to stop.
+`,
+
+  // ── Account & project ──────────────────────────────────────────────────────
+  "whoami.md": `---
+description: Show the signed-in Kurtel account
+allowed-tools: Bash(kurtel whoami:*)
+---
+Run \`kurtel whoami\` and report who is signed in (or that no one is, suggesting \`kurtel login\`).
+`,
+  "login.md": `---
+description: Sign in to Kurtel
+allowed-tools: Bash(kurtel whoami:*)
+---
+First run \`kurtel whoami\` to check the current session.
+If already signed in, tell the user. If not, do NOT run \`kurtel login\` yourself — it opens a browser and is interactive. Tell the user to run \`kurtel login\` in their own terminal to sign in, then come back.
+`,
+  "logout.md": `---
+description: Sign out of Kurtel
+allowed-tools: Bash(kurtel logout:*)
+---
+Run \`kurtel logout\` and confirm the session was cleared.
+`,
+  "config.md": `---
+description: View or change Kurtel local configuration
+allowed-tools: Bash(kurtel config:*)
+---
+The user said: "$ARGUMENTS"
+- If it looks like "set <key> <value>" → run \`kurtel config set <key> <value>\`
+- If it looks like "get <key>" → run \`kurtel config get <key>\`
+- Otherwise → run \`kurtel config list\` and present the configuration.
+`,
+  "init.md": `---
+description: Initialize Kurtel in the current project
+allowed-tools: Bash(kurtel init:*)
+---
+Run \`kurtel init\` and confirm the project was initialized (a project-level .kurtel/config.json is written).
+`,
+  "doctor.md": `---
+description: Check the Kurtel environment
+allowed-tools: Bash(kurtel doctor:*)
+---
+Run \`kurtel doctor\` and present the environment check results, flagging anything that needs attention.
 `,
 };
 
@@ -143,7 +229,7 @@ export async function installClaudeCodeCommand(): Promise<void> {
   for (const [name, content] of Object.entries(SLASH_COMMANDS)) {
     writeFileSync(join(cmdDir, name), content, "utf8");
   }
-  console.log(`${symbols.check} Slash commands installed: ${c.indigo("/kurtel:onboard")}, ${c.indigo("/kurtel:memory")}, ${c.indigo("/kurtel:status")}`);
+  console.log(`${symbols.check} ${Object.keys(SLASH_COMMANDS).length} slash commands installed ${c.dim("— type")} ${c.indigo("/kurtel:")} ${c.dim("in Claude Code to see them (memory, runs, account, project)")}`);
 
   // 3. Hooks (merge structuré, idempotent).
   let settings: Settings;
