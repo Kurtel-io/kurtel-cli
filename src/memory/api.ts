@@ -35,8 +35,9 @@ export function pullPatterns(repo: string, since?: string | null): Promise<{
   return authed("GET", `/api/memory/patterns${q(repo, since ? { since } : {})}`);
 }
 
-/** Push de la mémoire de codebase (digest, jamais le code source). */
+/** Push de la mémoire de codebase (digest, jamais le code source) — par branche. */
 export function pushIndex(repo: string, index: CodebaseIndex): Promise<{ ok: boolean }> {
+  const branch = index.branch || "main";
   const digest = {
     ...index,
     modules: index.modules.map((m) => ({
@@ -45,7 +46,7 @@ export function pushIndex(repo: string, index: CodebaseIndex): Promise<{ ok: boo
       symbols: (m.symbols ?? []).slice(0, 25).map((sy) => ({ ...sy, calls: sy.calls.slice(0, 15) })),
     })).slice(0, 3000),
   };
-  return authed("PUT", `/api/memory/index${q(repo)}`, digest);
+  return authed("PUT", `/api/memory/index${q(repo, { branch })}`, digest);
 }
 
 /** Push asynchrone de la télémétrie d'usage des patterns. */

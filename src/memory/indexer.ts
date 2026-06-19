@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, extname, dirname, sep } from "node:path";
 import { execSync } from "node:child_process";
 import type { CodebaseIndex, ModuleNode, RouteEntry } from "./store.js";
-import { repoFullName } from "./store.js";
+import { repoFullName, currentBranch } from "./store.js";
 import { extractFileAst, nextRouteFor } from "./ast.js";
 
 // ── Indexeur structurel: heuristiques regex local/déterministe (fallback de l'AST) ──
@@ -358,6 +358,7 @@ export async function buildIndex(root: string, onProgress?: (n: number) => void)
     version: 1,
     parser: { engine: regexFallbacks === files.size ? "regex" : "tree-sitter", regex_fallbacks: regexFallbacks },
     repo: repoFullName(root),
+    branch: currentBranch(root),
     commit,
     generated_at: new Date().toISOString(),
     files_indexed: files.size,

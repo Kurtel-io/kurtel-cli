@@ -57,6 +57,7 @@ export interface CodebaseIndex {
   /** Moteur d'extraction utilisé + nb de fichiers retombés en regex. */
   parser?: { engine: "tree-sitter" | "regex"; regex_fallbacks: number };
   repo: string;            // owner/name si détectable, sinon basename
+  branch: string;          // branche git au moment de l'index (défaut "main")
   commit: string;          // HEAD au moment de l'index
   generated_at: string;
   files_indexed: number;
@@ -106,6 +107,17 @@ export function repoSlug(root: string): string {
     if (m) name = m[1];
   } catch { /* pas de remote */ }
   return name.replace(/[^a-zA-Z0-9._-]+/g, "__");
+}
+
+/** Branche git courante. "main" par défaut (détaché / pas un repo git). */
+export function currentBranch(root: string): string {
+  try {
+    const b = execSync("git rev-parse --abbrev-ref HEAD", { cwd: root, stdio: ["ignore", "pipe", "ignore"] })
+      .toString().trim();
+    // HEAD détaché → "HEAD": on retombe sur main pour ne pas créer une branche fantôme.
+    if (b && b !== "HEAD") return b;
+  } catch { /* pas un repo git */ }
+  return "main";
 }
 
 export function repoFullName(root: string): string {

@@ -59,6 +59,7 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
     process.stdout.write(JSON.stringify({
       ok: true,
       repo: index.repo,
+      branch: index.branch,
       files_indexed: index.files_indexed,
       routes: index.routes.length,
       god_nodes: index.god_nodes,
@@ -72,7 +73,7 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
 
   console.log("");
   console.log(`${c.indigoBold("Architecture snapshot")}`);
-  console.log(`${c.gray("repo")}      ${c.white(index.repo)}`);
+  console.log(`${c.gray("repo")}      ${c.white(index.repo)} ${c.dim(`(branch ${index.branch})`)}`);
   console.log(`${c.gray("domains")}   ${c.white(index.domains.slice(0, 6).map((d) => d.name).join(", "))}`);
   if (index.god_nodes.length) {
     console.log(`${c.gray("hotspots")}  ${index.god_nodes.slice(0, 3).map((g) => `${c.indigo(g.id)} ${c.dim(`(${g.degree} edges)`)}`).join("  ")}`);
