@@ -2,15 +2,8 @@ import { apiUrl, loadConfig } from "../lib/config.js";
 import { AuthError } from "../lib/api.js";
 import type { CodebaseIndex, DarwinPattern, TelemetryEvent } from "./store.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// REMPLACE src/memory/api.ts du livrable précédent.
-// Changement: repo passé en query param (?repo=owner/name) au lieu d'un segment
-// de path — un "/" encodé dans un segment dynamique Next.js/Vercel est fragile.
-// Endpoints implémentés côté kurtel-app:
-//   GET  /api/memory/patterns?repo=...&since=...
-//   PUT  /api/memory/index?repo=...
-//   POST /api/memory/telemetry?repo=...
-// ─────────────────────────────────────────────────────────────────────────────
+// ── API mémoire kurtel-app ──
+// repo passé en query param (?repo=owner/name): un "/" dans un segment de path Next.js/Vercel est fragile.
 
 async function authed<T>(method: "GET" | "PUT" | "POST", path: string, body?: unknown): Promise<T> {
   const token = loadConfig().token as string | undefined;

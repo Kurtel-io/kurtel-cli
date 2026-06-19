@@ -1,12 +1,6 @@
 import type { CodebaseIndex } from "./store.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Moteur d'impact — la question "qu'est-ce qui casse si je change X ?"
-// répondue par BFS inverse sur deux graphes superposés:
-//   · fichier→fichier (imports)
-//   · symbole→symbole (graphe d'appels)
-// Le même moteur sert l'app (mode impact du graphe) ET l'agent (kurtel impact).
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Moteur d'impact: BFS inverse sur deux graphes superposés (imports fichier→fichier, appels symbole→symbole) ──
 
 export interface ImpactLayer {
   depth: number;
@@ -16,23 +10,23 @@ export interface ImpactLayer {
 export interface SymbolImpactEntry {
   symbol: string;          // "file.ts::fn"
   depth: number;
-  via: string;             // le symbole qu'il appelle (chaîne de propagation)
+  via: string;             // le symbole appelé (maillon de la chaîne)
 }
 
 export interface ImpactResult {
   target: string;                      // fichier ou "fichier::fonction"
   kind: "file" | "symbol";
-  direct: number;                      // dépendants à distance 1
+  direct: number;
   transitive: number;                  // total ≤ maxDepth
-  layers: ImpactLayer[];               // fichiers impactés par profondeur
-  symbols: SymbolImpactEntry[];        // chaîne d'appels inverses (si kind=symbol ou dispo)
+  layers: ImpactLayer[];
+  symbols: SymbolImpactEntry[];
   affectedRoutes: { method: string; path: string; file: string }[];
   truncated: boolean;
 }
 
 /** Adjacences inverses précalculées depuis l'index. */
 export function buildReverse(index: CodebaseIndex) {
-  const fileRev = new Map<string, string[]>();          // file ← importeurs
+  const fileRev = new Map<string, string[]>();          // fichier ← importeurs
   const symbolRev = new Map<string, { from: string; via: string }[]>(); // "f::fn" ← appelants
   for (const m of index.modules) {
     for (const t of m.imports) {
@@ -63,7 +57,6 @@ export function resolveTarget(index: CodebaseIndex, query: string): { id: string
   if (exact) return { id: exact.id, kind: "file" };
   const suffix = index.modules.filter((m) => m.id.endsWith("/" + q) || m.id.endsWith(q));
   if (suffix.length === 1) return { id: suffix[0].id, kind: "file" };
-  // nom de fonction seul: unique dans le repo ?
   const owners = index.modules.filter((m) => m.symbols?.some((s) => s.name === q));
   if (owners.length === 1) return { id: `${owners[0].id}::${q}`, kind: "symbol" };
   return null;
@@ -80,7 +73,7 @@ export function computeImpact(
   let truncated = false;
 
   if (target.kind === "symbol") {
-    // BFS inverse sur le graphe d'appels; les fichiers porteurs héritent de la profondeur.
+    // BFS inverse sur le graphe d'appels; les fichiers porteurs héritent de la profondeur du symbole.
     const seen = new Map<string, number>([[target.id, 0]]);
     let frontier = [target.id];
     for (let d = 1; d <= maxDepth && frontier.length; d++) {
@@ -98,7 +91,7 @@ export function computeImpact(
       }
       frontier = next;
     }
-    // Le fichier hôte du symbole est impacté à profondeur 0 (on le modifie).
+    // Fichier hôte à profondeur 0: c'est lui qu'on modifie.
     fileDepth.set(target.id.split("::")[0], 0);
   } else {
     const seen = new Map<string, number>([[target.id, 0]]);
@@ -116,7 +109,7 @@ export function computeImpact(
       frontier = next;
     }
     for (const [f, d] of seen) if (d > 0) fileDepth.set(f, d);
-    // Bonus: appels symboliques inverses depuis tous les symboles du fichier (profondeur 1 du détail).
+    // Détail: appelants symboliques des symboles du fichier (profondeur 1).
     const mod = index.modules.find((m) => m.id === target.id);
     for (const s of mod?.symbols ?? []) {
       for (const caller of symbolRev.get(`${target.id}::${s.name}`) ?? []) {

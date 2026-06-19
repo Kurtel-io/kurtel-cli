@@ -9,3 +9,4 @@ bench/runs/
 bench/results.csv
 bench/tasks.json
 bench/
+.claude/

@@ -3,21 +3,10 @@ import { createInterface } from "node:readline";
 import type { CodebaseIndex } from "./store.js";
 import { userVectorsDir, vectorsReadPaths, vectorsPathsIn } from "./store.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Embeddings sémantiques — word-vectors ALIGNÉS cross-lingues (ex: fastText
-// aligned). Le pari: relier un prompt FR ("encaisser un client") à du code EN
-// (stripeCharge.ts) sans table de synonymes ni modèle neuronal.
-//   · Pas de runtime: une table {mot → vecteur} lue en binaire, lookup pur.
-//   · Tout SYNCHRONE → compileCapsule ne change pas de nature. Pas de daemon,
-//     pas de réseau à l'exécution, déterministe.
-//   · Si la table est absente/illisible → null partout, la capsule retombe sur
-//     le lexical. Même contrat de dégradation que ast.ts (initFailed).
-//
-// Format de la table (~/.kurtel/vectors/):
-//   vocab.txt    — un mot par ligne (UTF-8), ligne i ↔ vecteur i
-//   vectors.bin  — header 12 o + matrice int8 (vecteurs L2-normalisés ×127)
-//     header: "KVEC"(4) | version u8 | quant u8(1=int8) | dim u16 | count u32  (LE)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Embeddings sémantiques — word-vectors alignés cross-lingues (relie prompt FR ↔ code EN) ──
+// Table {mot → vecteur} lue en binaire, lookup pur, synchrone. Absente/illisible → null partout (fallback lexical).
+// Format ~/.kurtel/vectors/: vocab.txt (mot/ligne, ligne i ↔ vecteur i) ;
+// vectors.bin = header 12 o "KVEC"(4)|version u8|quant u8(1=int8)|dim u16|count u32 (LE) + matrice int8 (L2-normalisés ×127).
 
 const MAGIC = "KVEC";
 const HEADER = 12;
@@ -55,7 +44,7 @@ function getTable(): Table | null {
   }
 }
 
-/** La table est-elle disponible ? (utilisé par onboard pour calculer les vecteurs modules) */
+/** La table est-elle disponible ? */
 export function embeddingsAvailable(): boolean {
   return getTable() !== null;
 }
@@ -73,7 +62,6 @@ export function vectorsInfo(): { words: number; dim: number } | null {
 
 // ── Découpage des identifiants de code en sous-mots cherchables ─────────────
 // chargeCustomer → ["charge","customer"] ; get_invoice → ["get","invoice"]
-
 export function splitIdentifier(name: string): string[] {
   return name
     .replace(/[_\-./\\]+/g, " ")
@@ -151,12 +139,9 @@ export function buildModuleVectors(index: CodebaseIndex): ModuleVectors | null {
   return { dim: t.dim, ids, matrix };
 }
 
-// ── Converter: un .vec standard (fastText/word2vec) → notre table compacte ──
-// Format .vec: 1ère ligne "count dim", puis "mot v1 v2 … vdim" par ligne.
-// On dégraisse au top-N (les .vec sont triés par fréquence), normalise, quantifie
-// en int8, et FUSIONNE avec la table existante (pour cumuler FR puis EN alignés).
+// ── Converter: un .vec (fastText/word2vec) → table compacte int8, top-N, fusionnée avec l'existante ──
+// Format .vec: 1ère ligne "count dim", puis "mot v1 v2 … vdim" par ligne. Top-N: les .vec sont triés par fréquence.
 
-// "count dim" — ligne d'en-tête word2vec/fastText (que des chiffres, pas de mot).
 const HEADER_RE = /^\s*\d+\s+\d+\s*$/;
 
 function readExistingTable(dir: string): { dim: number; body: Buffer; vocab: string[] } | null {
@@ -209,7 +194,6 @@ export async function importVecFile(
         throw new Error(`dim mismatch: table is ${existing.dim}d, file is ${dim}d`);
       }
 
-      // L2-normalise puis quantifie en int8.
       let norm = 0;
       const vals = new Array<number>(dim);
       for (let i = 0; i < dim; i++) { const v = Number(parts[i]); vals[i] = v; norm += v * v; }
@@ -243,8 +227,7 @@ export async function importVecFile(
   writeFileSync(bin, out);
   writeFileSync(vocab, [...(existing?.vocab ?? []), ...newWords].join("\n") + "\n", "utf8");
 
-  // invalide le cache en mémoire de ce process
-  table = null;
+  table = null; // invalide le cache process
   loadFailed = false;
 
   return { added, total, dim, dir: outDir };

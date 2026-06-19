@@ -4,9 +4,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Types — le contrat de données partagé entre le CLI, les hooks et le backend.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Types ──
 
 /** Un pattern darwinien : une convention apprise des PR (merge/comments/close). */
 export interface DarwinPattern {
@@ -19,7 +17,6 @@ export interface DarwinPattern {
   triggers: string[];
   /** Score de fitness darwinien [0..1] — maintenu côté backend. */
   score: number;
-  /** Provenance: PRs qui ont fait naître/confirmé le pattern. */
   evidence: { pr: number; repo: string; kind: "born" | "confirmed" | "contradicted" }[];
   /** Pattern promu au socle: injecté quelle que soit l'intention. */
   pinned: boolean;
@@ -29,7 +26,7 @@ export interface DarwinPattern {
 /** Une route HTTP (ou handler) inventoriée — la réponse au pain point n°1. */
 export interface RouteEntry {
   method: string;          // GET / POST / * (event handler, cron...)
-  path: string;            // /clients/:id/invoices
+  path: string;
   file: string;            // chemin relatif repo
   line: number;
   framework: string;       // express | fastapi | nest | flask | next | unknown
@@ -71,7 +68,6 @@ export interface CodebaseIndex {
   domains: { name: string; files: number; loc: number }[];
 }
 
-/** Cache local complet pour un repo. */
 export interface MemoryCache {
   patterns: DarwinPattern[];
   patterns_synced_at: string | null;
@@ -88,13 +84,9 @@ export interface TelemetryEvent {
   detail?: string;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Emplacements disque
-//   ~/.kurtel/cache/<repo-slug>/patterns.json   ← mémoire darwinienne (pull Supabase)
-//   <repo>/.kurtel/index.json                   ← mémoire de codebase (déterministe)
-//   <repo>/.kurtel/REPORT.md                    ← rapport d'audit lisible
-//   <repo>/.kurtel/memory.json                  ← état local (on/off, session zones)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Emplacements disque ──
+//   ~/.kurtel/cache/<repo-slug>/  ← mémoire darwinienne + vecteurs (hors repo)
+//   <repo>/.kurtel/               ← index.json, REPORT.md, state.json (dans le repo)
 
 export function repoRoot(cwd = process.cwd()): string {
   try {
@@ -106,7 +98,6 @@ export function repoRoot(cwd = process.cwd()): string {
 }
 
 export function repoSlug(root: string): string {
-  // owner/name depuis le remote si possible, sinon basename — slugifié pour un nom de dossier.
   let name = root.split(/[\\/]/).filter(Boolean).pop() ?? "repo";
   try {
     const url = execSync("git remote get-url origin", { cwd: root, stdio: ["ignore", "pipe", "ignore"] })
@@ -161,7 +152,7 @@ export function saveMemoryCache(root: string, cache: MemoryCache): void {
 export function queueTelemetry(root: string, ev: TelemetryEvent): void {
   const cache = loadMemoryCache(root);
   cache.pending_telemetry.push(ev);
-  // borne dure: jamais plus de 500 événements en attente (pas de croissance infinie)
+  // borne dure: pas de croissance infinie
   if (cache.pending_telemetry.length > 500) {
     cache.pending_telemetry = cache.pending_telemetry.slice(-500);
   }
@@ -191,8 +182,7 @@ export function userVectorsDir(): string {
   return join(homedir(), ".kurtel", "vectors");
 }
 
-/** Table livrée AVEC le package npm: dist/memory/store.js → ../../assets/vectors
- *  (même calcul en dev via tsx: src/memory/store.ts → ../../assets/vectors à la racine repo). */
+/** Table livrée avec le package: dist|src/memory → ../../assets/vectors (même chemin en build et en dev tsx). */
 function bundledVectorsDir(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "vectors");
 }
@@ -273,7 +263,7 @@ export function loadMemoryState(root: string): MemoryState {
 }
 
 export function saveMemoryState(root: string, state: MemoryState): void {
-  // garde-fou: ne garder que les 20 dernières sessions
+  // garde-fou: borne le nombre de sessions retenues
   const ids = Object.keys(state.session_zones);
   if (ids.length > 20) {
     for (const id of ids.slice(0, ids.length - 20)) delete state.session_zones[id];

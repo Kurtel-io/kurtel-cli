@@ -4,16 +4,10 @@ import { c, symbols } from "../ui/colors.js";
 import { loadConfig } from "../lib/config.js";
 import { repoRoot } from "../memory/store.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// `kurtel install claude-code`
-//   1. Slash commands → .claude/commands/kurtel/*.md  (/kurtel:onboard, etc.)
-//   2. Hooks → .claude/settings.json (merge JSON structuré, idempotent —
-//      la leçon Graphify: jamais de manipulation de chaîne sur les settings)
-//   3. Vérifie le login; réutilise le token du CLI (zéro re-auth)
-// `kurtel uninstall claude-code` retire proprement nos entrées, rien d'autre.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── install/uninstall claude-code: slash commands + hooks dans .claude/ ──
+// Hooks mergés en JSON structuré, jamais par manipulation de chaîne.
 
-const KURTEL_HOOK_MARKER = "kurtel hook"; // identifie NOS hooks dans settings.json
+const KURTEL_HOOK_MARKER = "kurtel hook"; // identifie nos hooks dans settings.json
 
 const HOOK_EVENTS: { event: string; sub: string }[] = [
   { event: "SessionStart", sub: "session-start" },
@@ -22,7 +16,7 @@ const HOOK_EVENTS: { event: string; sub: string }[] = [
   { event: "SessionEnd", sub: "session-end" },
 ];
 
-// ── Slash commands (markdown, format Claude Code custom commands) ───────────
+// ── Slash commands (markdown, format Claude Code) ───────────
 
 const SLASH_COMMANDS: Record<string, string> = {
   // ── Codebase memory (local) ────────────────────────────────────────────────
@@ -168,7 +162,7 @@ function mergeHooks(settings: Settings): Settings {
   const hooks = settings.hooks ?? {};
   for (const { event, sub } of HOOK_EVENTS) {
     const matchers: Matcher[] = hooks[event] ?? [];
-    // retirer toute ancienne entrée kurtel (idempotence), sans toucher au reste
+    // purge des anciennes entrées kurtel (idempotence), sans toucher au reste
     for (const m of matchers) m.hooks = m.hooks.filter((h) => !isKurtelEntry(h));
     const cleaned = matchers.filter((m) => m.hooks.length > 0);
 
@@ -216,7 +210,6 @@ export async function installClaudeCodeCommand(): Promise<void> {
 
   console.log("");
 
-  // 1. Login check (réutilise le token CLI — pas de re-auth).
   const config = loadConfig();
   if (config.loggedIn && config.token) {
     console.log(`${symbols.check} Using your Kurtel session ${c.dim(`(${config.account ?? "account"})`)}`);
@@ -224,14 +217,12 @@ export async function installClaudeCodeCommand(): Promise<void> {
     console.log(`${c.yellow(symbols.warn)} ${c.dim("Not signed in — memory will work locally; run")} ${c.indigo("kurtel login")} ${c.dim("to sync patterns.")}`);
   }
 
-  // 2. Slash commands.
   if (!existsSync(cmdDir)) mkdirSync(cmdDir, { recursive: true });
   for (const [name, content] of Object.entries(SLASH_COMMANDS)) {
     writeFileSync(join(cmdDir, name), content, "utf8");
   }
   console.log(`${symbols.check} ${Object.keys(SLASH_COMMANDS).length} slash commands installed ${c.dim("— type")} ${c.indigo("/kurtel:")} ${c.dim("in Claude Code to see them (memory, runs, account, project)")}`);
 
-  // 3. Hooks (merge structuré, idempotent).
   let settings: Settings;
   try {
     settings = readSettings(settingsFile);

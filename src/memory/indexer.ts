@@ -5,11 +5,7 @@ import type { CodebaseIndex, ModuleNode, RouteEntry } from "./store.js";
 import { repoFullName } from "./store.js";
 import { extractFileAst, nextRouteFor } from "./ast.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Indexeur structurel — 100% local, 0 token, déterministe (même input → même
-// output). Heuristiques regex pragmatiques pour TS/JS/Python ; le point
-// d'extension propre pour passer à tree-sitter plus tard est extractFile().
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Indexeur structurel: heuristiques regex local/déterministe (fallback de l'AST) ──
 
 const CODE_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".java", ".go", ".rs", ".cs"]);
 
@@ -18,20 +14,18 @@ const IGNORE_DIRS = new Set([
   "vendor", "__pycache__", ".venv", "venv", ".kurtel", ".claude", ".idea", ".vscode",
 ]);
 
-// Filtrage anti-bruit (la leçon Graphify) : on indexe le code, pas les assets/config.
 const IGNORE_FILES = /\.(min\.js|d\.ts|test\.[jt]sx?|spec\.[jt]sx?|stories\.[jt]sx?)$|(^|\/)(conftest|setup)\.py$/;
 
 export interface FileFacts {
   rel: string;
   loc: number;
   exports: string[];
-  importSpecs: string[];   // spécificateurs bruts ("./foo", "../lib/bar", "app.models")
+  importSpecs: string[];   // spécificateurs bruts ("./foo", "app.models")
   routes: RouteEntry[];
-  /** Fonctions/méthodes définies dans le fichier. */
   defs: { name: string; line: number }[];
-  /** Imports nommés: nom local → {spec, orig}. orig = nom exporté côté cible (gère les alias). */
+  /** nom local → {spec, orig}; orig = nom exporté côté cible (gère les alias). */
   namedImports: Record<string, { spec: string; orig: string } | string>;
-  /** Sites d'appel candidats. `owner` (voie AST): ligne de la def englobante, 0 = top-level. */
+  /** `owner` (voie AST): ligne de la def englobante, 0 = top-level. */
   rawCalls: { name: string; line: number; owner?: number }[];
 }
 
@@ -46,14 +40,12 @@ interface RoutePattern {
 
 // Patterns par langage — jamais croisés (sinon `@app.get(...)` Python matche aussi le pattern Express).
 const JS_ROUTE_PATTERNS: RoutePattern[] = [
-  // Express / Fastify / Koa-router (router.get("/x"), app.post('/y'))
   {
     re: /\b(?:app|router|server|api|fastify)\s*\.\s*(get|post|put|patch|delete|head|options|all)\s*\(\s*["'`]([^"'`]+)["'`]/g,
     framework: "express-like",
     method: (m) => m[1].toUpperCase(),
     path: (m) => m[2],
   },
-  // Décorateurs Nest: @Get("/x"), @Post()
   {
     re: /@(Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*(?:["'`]([^"'`]*)["'`])?\s*\)/g,
     framework: "nest",
@@ -63,7 +55,6 @@ const JS_ROUTE_PATTERNS: RoutePattern[] = [
 ];
 
 const PY_ROUTE_PATTERNS: RoutePattern[] = [
-  // FastAPI / Flask: @app.get("/x"), @router.post("/y"), @app.route("/z", methods=["POST"])
   {
     re: /@\s*[\w.]+\.(get|post|put|patch|delete|route)\s*\(\s*["']([^"']+)["']/g,
     framework: "python",
@@ -100,7 +91,6 @@ function extractFile(root: string, rel: string, src: string): FileFacts {
   if (isPy) {
     for (const m of src.matchAll(/^\s*(?:from\s+([\w.]+)\s+import\s+([\w ,]+)|import\s+([\w.]+))/gm)) {
       facts.importSpecs.push(m[1] ?? m[3]);
-      // from x import a, b → imports nommés
       if (m[1] && m[2]) {
         for (const name of m[2].split(",").map((s) => s.trim().split(/\s+as\s+/)[0])) {
           if (/^\w+$/.test(name)) facts.namedImports[name] = m[1];
@@ -117,7 +107,7 @@ function extractFile(root: string, rel: string, src: string): FileFacts {
       const spec = m[3] ?? m[4];
       if (!spec) continue;
       facts.importSpecs.push(spec);
-      if (m[1]) facts.namedImports[m[1]] = spec; // import défaut
+      if (m[1]) facts.namedImports[m[1]] = spec;
       if (m[2]) {
         for (const part of m[2].split(",")) {
           const name = part.trim().split(/\s+as\s+/).pop()?.trim();
@@ -125,7 +115,6 @@ function extractFile(root: string, rel: string, src: string): FileFacts {
         }
       }
     }
-    // Définitions: function decl, const fléchée, méthodes de classe.
     for (const m of src.matchAll(/\b(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)/g)) {
       facts.defs.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
     }
@@ -140,14 +129,13 @@ function extractFile(root: string, rel: string, src: string): FileFacts {
     }
   }
 
-  // Dédupe les defs (même nom: garder la première occurrence), tri par ligne.
+  // Dédupe par nom: garde la première occurrence (la plus haute après tri).
   const seen = new Set<string>();
   facts.defs = facts.defs
     .sort((a, b) => a.line - b.line)
     .filter((d) => (seen.has(d.name) ? false : (seen.add(d.name), true)))
     .slice(0, 40);
 
-  // Sites d'appel candidats: identifiant suivi de "(", hors mots-clés.
   const kw = isPy ? PY_KEYWORDS : JS_KEYWORDS;
   let count = 0;
   for (const m of src.matchAll(/(?<![\w.])([A-Za-z_]\w{2,})\s*\(/g)) {
@@ -155,8 +143,7 @@ function extractFile(root: string, rel: string, src: string): FileFacts {
     facts.rawCalls.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
     if (++count >= 800) break;
   }
-  // Appels qualifiés "Prefix.method(" → candidat "Prefix." (résolu vers la
-  // classe/module importé en post-passe; le point final marque le cas qualifié).
+  // "Prefix.method(" → candidat "Prefix." ; le point final marque le cas qualifié (résolu en post-passe).
   for (const m of src.matchAll(/(?<![\w.])([A-Z]\w{2,})\.\w+\s*\(/g)) {
     if (kw.has(m[1])) continue;
     facts.rawCalls.push({ name: m[1] + ".", line: lineOf(src, m.index ?? 0) });
@@ -164,7 +151,6 @@ function extractFile(root: string, rel: string, src: string): FileFacts {
   }
   facts.rawCalls.sort((a, b) => a.line - b.line);
 
-  // Routes par appel/décorateur, avec n° de ligne — patterns du bon langage uniquement.
   const routePatterns = ext === ".py" ? PY_ROUTE_PATTERNS : JS_ROUTE_PATTERNS;
   for (const p of routePatterns) {
     for (const m of src.matchAll(p.re)) {
@@ -239,8 +225,7 @@ function buildSymbols(
   for (const [rel, f] of all) {
     const locals = defNames.get(rel)!;
     const symbols = f.defs.slice(0, MAX_SYMBOLS_PER_FILE).map((d) => ({ ...d, calls: [] as string[] }));
-    // Pseudo-symbole pour les appels hors fonction (handlers de routes inline,
-    // initialisation module) — c'est là que vivent les arêtes des fichiers routes.
+    // Pseudo-symbole pour les appels hors fonction (handlers de routes inline, init module).
     const topLevel = { name: "(module)", line: 0, calls: [] as string[] };
 
     const resolveCall = (raw: string): string | null => {
@@ -250,7 +235,7 @@ function buildSymbols(
       const entry = f.namedImports[name];
       if (entry) {
         const spec = typeof entry === "string" ? entry : entry.spec;
-        const orig = typeof entry === "string" ? name : entry.orig; // alias → nom exporté côté cible
+        const orig = typeof entry === "string" ? name : entry.orig;
         const file = resolve(rel, spec);
         if (file && file !== rel && (defNames.get(file)?.has(orig) || exportNames.get(file)?.has(orig))) {
           return `${file}::${orig}`;
@@ -383,7 +368,7 @@ export async function buildIndex(root: string, onProgress?: (n: number) => void)
   };
 }
 
-// ── Rapport d'audit (le "moment wow" du jour 0) ─────────────────────────────
+// ── Rapport d'audit ─────────────────────────────────────────────────────────
 
 export function renderReport(index: CodebaseIndex): string {
   const lines: string[] = [];

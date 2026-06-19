@@ -12,12 +12,7 @@ import { compileCapsule, compileZoneCapsule, findSimilarRoutes } from "../memory
 import { resolveTarget, computeImpact } from "../memory/impact.js";
 import { syncInBackground } from "../memory/sync.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// `kurtel hook <event>` — appelé PAR Claude Code, jamais par un humain.
-// Protocole: JSON sur stdin → JSON sur stdout, exit 0 TOUJOURS (un hook qui
-// crashe ne doit jamais casser une session de code). Budget temps: <50ms hors
-// premier chargement; tout est lu en local, zéro réseau synchrone.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── `kurtel hook <event>`: appelé par Claude Code. JSON stdin → stdout, exit 0 TOUJOURS (un hook qui crashe ne doit jamais casser la session). ──
 
 interface HookInput {
   session_id?: string;
@@ -25,7 +20,7 @@ interface HookInput {
   hook_event_name?: string;
   prompt?: string;                       // UserPromptSubmit
   tool_name?: string;                    // PostToolUse
-  tool_input?: Record<string, unknown>;  // PostToolUse
+  tool_input?: Record<string, unknown>;
 }
 
 function readStdin(): Promise<string> {
@@ -35,8 +30,7 @@ function readStdin(): Promise<string> {
     process.stdin.on("data", (c) => (data += c));
     process.stdin.on("end", () => resolve(data));
     process.stdin.on("error", () => resolve(data));
-    // garde-fou: si rien n'arrive, on rend la main vite
-    setTimeout(() => resolve(data), 2000).unref?.();
+    setTimeout(() => resolve(data), 2000).unref?.(); // garde-fou si rien n'arrive sur stdin
   });
 }
 
@@ -71,14 +65,14 @@ export async function hookCommand(event: string): Promise<void> {
   }
 }
 
-// ── SessionStart: lancer le sync en arrière-plan + une ligne d'état ─────────
+// ── SessionStart: sync en arrière-plan + une ligne d'état ──
 
 function onSessionStart(root: string, input: HookInput): void {
-  syncInBackground(root); // pull patterns + flush télémétrie, détaché
+  syncInBackground(root);
 
   const index = loadIndex(root);
   const cache = loadMemoryCache(root);
-  if (!index && !cache.patterns.length) return; // rien à dire → rien dit
+  if (!index && !cache.patterns.length) return;
 
   const bits: string[] = [];
   if (index) bits.push(`codebase index: ${index.files_indexed} files, ${index.routes.length} routes (commit ${index.commit.slice(0, 8)})`);
@@ -89,7 +83,7 @@ function onSessionStart(root: string, input: HookInput): void {
   );
 }
 
-// ── UserPromptSubmit: LA capsule — intention → zones → patterns ─────────────
+// ── UserPromptSubmit: la capsule — intention → zones → patterns ──
 
 function onPrompt(root: string, input: HookInput): void {
   const prompt = input.prompt ?? "";
@@ -102,7 +96,7 @@ function onPrompt(root: string, input: HookInput): void {
 
   emitContext("UserPromptSubmit", capsule.text);
 
-  // mémorise les zones couvertes (pour ne pas répéter au PostToolUse)
+  // mémorise les zones couvertes pour ne pas les répéter au PostToolUse
   const sid = input.session_id ?? "unknown";
   const state = loadMemoryState(root);
   state.session_zones[sid] = [...new Set([...(state.session_zones[sid] ?? []), ...capsule.zones])];
@@ -119,7 +113,7 @@ function onPrompt(root: string, input: HookInput): void {
   }
 }
 
-// ── PostToolUse: dérive d'intention + anti-duplication de routes ────────────
+// ── PostToolUse: dérive d'intention + anti-duplication de routes ──
 
 const ROUTE_WRITE = /\.(get|post|put|patch|delete)\s*\(\s*["'`]([^"'`]+)["'`]|@(?:Get|Post|Put|Patch|Delete)\s*\(\s*["'`]([^"'`]+)["'`]|@\w+\.(?:get|post|put|patch|delete|route)\s*\(\s*["']([^"']+)["']/;
 
@@ -139,7 +133,7 @@ function onPostToolUse(root: string, input: HookInput): void {
 
   const messages: string[] = [];
 
-  // 1. Anti-duplication: l'agent vient-il d'écrire une route qui existe déjà ?
+  // 1. Anti-duplication: route écrite qui existe déjà ?
   const written = ((ti.new_string ?? ti.content ?? "") as string);
   const rm = written.match(ROUTE_WRITE);
   if (rm && index) {
@@ -158,7 +152,7 @@ function onPostToolUse(root: string, input: HookInput): void {
     }
   }
 
-  // 2. Dérive d'intention: nouvelle zone du graphe → micro-capsule de zone.
+  // 2. Nouvelle zone du graphe → micro-capsule de zone.
   const zone = filePath.includes("/") ? filePath.split("/").slice(0, 2).join("/") : filePath;
   if (!seen.has(zone)) {
     const zc = compileZoneCapsule(index, cache.patterns, filePath);
@@ -173,7 +167,7 @@ function onPostToolUse(root: string, input: HookInput): void {
     saveMemoryState(root, state);
   }
 
-  // 3. Fichier à fort couplage: une ligne d'impact, la même vue que le dev.
+  // 3. Fichier à fort couplage → une ligne d'impact.
   if (index) {
     const mod = index.modules.find((m) => m.id === filePath);
     const isHot = mod && (mod.degree >= 8 || index.god_nodes.some((g) => g.id === filePath));
@@ -197,7 +191,7 @@ function onPostToolUse(root: string, input: HookInput): void {
   if (messages.length) emitContext("PostToolUse", messages.join("\n\n"));
 }
 
-// ── SessionEnd / Stop: flush télémétrie en arrière-plan ─────────────────────
+// ── SessionEnd / Stop: flush télémétrie en arrière-plan ──
 
 function onSessionEnd(root: string, _input: HookInput): void {
   syncInBackground(root);

@@ -3,18 +3,14 @@ import { loadMemoryCache, saveMemoryCache, repoFullName } from "./store.js";
 import { pullPatterns, pushTelemetry, pushIndex } from "./api.js";
 import { loadIndex } from "./store.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sync — règle d'or: AUCUN appel réseau sur le chemin critique d'un prompt.
-// Les hooks lisent le cache local; le sync tourne en arrière-plan (process
-// détaché) au SessionStart et après chaque session.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Sync ──
+// Règle d'or: aucun appel réseau sur le chemin critique d'un prompt — les hooks lisent le cache, le sync tourne détaché.
 
 /** Sync synchrone (utilisé par `kurtel memory sync` et le process détaché). */
 export async function syncNow(root: string): Promise<{ pulled: number; flushed: number }> {
   const repo = repoFullName(root);
   const cache = loadMemoryCache(root);
 
-  // 1. Pull delta des patterns darwiniens.
   let pulled = 0;
   try {
     const res = await pullPatterns(repo, cache.patterns_synced_at);
@@ -29,7 +25,6 @@ export async function syncNow(root: string): Promise<{ pulled: number; flushed: 
     pulled = res.patterns.length;
   } catch { /* offline / pas loggé: le cache continue de servir */ }
 
-  // 2. Flush de la télémétrie en attente.
   let flushed = 0;
   if (cache.pending_telemetry.length) {
     try {

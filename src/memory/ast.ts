@@ -4,17 +4,8 @@ import { existsSync } from "node:fs";
 import type { RouteEntry } from "./store.js";
 import type { FileFacts } from "./indexer.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Extraction AST via tree-sitter (WASM) — la voie prod.
-//   · web-tree-sitter@0.20.8 EXACT + tree-sitter-wasms: paire d'ABI appariée,
-//     pinnée dans package.json. PAS de bindings natifs (node-gyp/VS Build Tools
-//     seraient l'enfer d'install sur les machines des utilisateurs).
-//   · Langages: typescript, tsx, javascript (+ jsx/mjs/cjs), python.
-//   · Chargement lazy (init au premier fichier), grammaires mises en cache,
-//     arbres libérés après chaque fichier (mémoire WASM).
-//   · Si l'init ou une grammaire échoue → null, l'indexeur retombe sur les
-//     heuristiques regex. Le CLI ne casse jamais pour un parseur.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Extraction AST via tree-sitter (WASM) ──
+// web-tree-sitter@0.20.8 + tree-sitter-wasms: ABI appariée pinnée, pas de bindings natifs (install cross-platform). Init lazy, grammaires en cache, échec → null (fallback regex côté indexeur).
 
 // Typage minimal de l'API 0.20 (le package CJS n'expose pas ses types via exports)
 interface TSPoint { row: number; column: number }
@@ -77,7 +68,7 @@ async function getParser(ext: string): Promise<{ parser: TSParser; lang: unknown
     }
     return { parser, lang };
   } catch {
-    initFailed = true; // environnement sans WASM: fallback regex global, une seule tentative
+    initFailed = true; // env sans WASM: une seule tentative, fallback regex global
     return null;
   }
 }
@@ -93,23 +84,21 @@ function stripQuotes(s: string): string {
 }
 function line(n: TSNode): number { return n.startPosition.row + 1; }
 
-/** Ligne de la définition nommée englobante (0 = top-level / handler anonyme → "(module)").
- *  Renvoie la ligne du NŒUD PORTEUR DU NOM (def enregistrée dans facts.defs), pour
- *  que l'attribution par `owner` matche `byLine` côté buildSymbols. */
+/** Ligne de la def nommée englobante (0 = top-level/anonyme). Ligne du nœud porteur du nom, pour aligner `owner` sur `byLine` côté buildSymbols. */
 function enclosingDefLine(node: TSNode, defKinds: Set<string>, nameOf: (n: TSNode) => TSNode | null): number {
   let cur = node.parent;
   while (cur) {
     if (defKinds.has(cur.type)) {
       const name = nameOf(cur);
       if (name) {
-        // La def est enregistrée à la ligne du déclarateur/méthode, pas de l'arrow.
+        // def enregistrée à la ligne du déclarateur/méthode, pas de l'arrow
         if (cur.type === "arrow_function" || cur.type === "function" || cur.type === "function_expression") {
           const carrier = cur.parent; // variable_declarator | public_field_definition
           return line(carrier ?? cur);
         }
         return line(cur);
       }
-      // fonction anonyme (callback inline): on continue de remonter
+      // anonyme: on continue de remonter
     }
     cur = cur.parent;
   }
@@ -156,7 +145,7 @@ function extractJs(rel: string, src: string, root: TSNode): FileFacts {
           if (id) facts.namedImports[id.text] = spec;
         } else if (child.type === "named_imports") {
           for (const isp of child.descendantsOfType("import_specifier")) {
-            // local = alias si présent, sinon name. On ignore les imports de type.
+            // local = alias sinon name; imports de type ignorés
             if (isp.children.some((c) => c.type === "type")) continue;
             const nameNode = isp.childForFieldName("name");
             const aliasNode = isp.childForFieldName("alias");
@@ -540,7 +529,7 @@ export async function extractFileAst(rel: string, src: string, ext: string): Pro
       default: facts = extractJs(rel, src, root); break; // ts/tsx/js/jsx
     }
 
-    // Bornes + dédupe defs (première occurrence par nom), tri par ligne — comme la voie regex.
+    // Dédupe (1re occurrence) + tri + bornes — parité avec la voie regex.
     const seen = new Set<string>();
     facts.defs = facts.defs
       .sort((a, b) => a.line - b.line)
@@ -551,9 +540,9 @@ export async function extractFileAst(rel: string, src: string, ext: string): Pro
     facts.exports = [...new Set(facts.exports)];
     return facts;
   } catch {
-    return null; // fichier illisible par l'AST → regex
+    return null; // illisible par l'AST → regex
   } finally {
-    tree?.delete(); // mémoire WASM: indispensable sur des milliers de fichiers
+    tree?.delete(); // libère la mémoire WASM (milliers de fichiers)
   }
 }
 

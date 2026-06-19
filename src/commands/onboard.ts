@@ -17,7 +17,6 @@ export interface OnboardOptions {
 export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
   const root = repoRoot();
 
-  // 1. Index structurel — local, déterministe, 0 token.
   const spin = opts.json ? null : new Spinner("Indexing codebase (local, deterministic)…").start();
   const index = await buildIndex(root, (n) => {
     spin?.update(`Indexing codebase… ${n} files`);
@@ -25,8 +24,7 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
   saveIndex(root, index);
   spin?.succeed(`Indexed ${index.files_indexed} files · ${index.routes.length} routes · ${index.god_nodes.length} god nodes`);
 
-  // 1b. Vecteurs sémantiques par module — seulement si une table alignée est installée.
-  //     Pont FR→EN pour la sélection de zones. Sinon: silencieux, la capsule reste lexicale.
+  // Vecteurs sémantiques (pont FR→EN pour la sélection de zones) — sinon la capsule reste lexicale.
   if (embeddingsAvailable()) {
     const mv = buildModuleVectors(index);
     if (mv) {
@@ -35,14 +33,12 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
     }
   }
 
-  // 2. Rapport d'audit — le livrable du jour 0.
   const report = renderReport(index);
   const rp = reportPath(root);
   const dir = join(root, ".kurtel");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(rp, report, "utf8");
 
-  // 3. Sync: pull des patterns + push du digest pour l'app web.
   let uploaded = false;
   let patterns = 0;
   if (!opts.local) {
@@ -60,8 +56,6 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
   }
 
   if (opts.json) {
-    // Sortie machine pour le slash command /kurtel:onboard — l'agent lit ce JSON
-    // et présente le rapport à l'utilisateur dans la session.
     process.stdout.write(JSON.stringify({
       ok: true,
       repo: index.repo,
@@ -76,7 +70,6 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
     return;
   }
 
-  // Affichage humain
   console.log("");
   console.log(`${c.indigoBold("Architecture snapshot")}`);
   console.log(`${c.gray("repo")}      ${c.white(index.repo)}`);
