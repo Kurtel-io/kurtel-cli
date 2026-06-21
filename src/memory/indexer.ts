@@ -286,6 +286,11 @@ function* walk(dir: string, root: string): Generator<string> {
   }
 }
 
+/** Fichiers de code indexables (mêmes filtres exacts que buildIndex) — pour la détection de dérive. */
+export function listCodeFiles(root: string): string[] {
+  return [...walk(root, root)].sort();
+}
+
 // ── Construction de l'index ─────────────────────────────────────────────────
 
 export async function buildIndex(root: string, onProgress?: (n: number) => void): Promise<CodebaseIndex> {

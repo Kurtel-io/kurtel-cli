@@ -130,7 +130,7 @@ export function repoFullName(root: string): string {
   return root.split(/[\\/]/).filter(Boolean).pop() ?? "repo";
 }
 
-function cacheDir(root: string): string {
+export function cacheDir(root: string): string {
   return join(homedir(), ".kurtel", "cache", repoSlug(root));
 }
 

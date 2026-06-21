@@ -11,6 +11,7 @@ import {
 import { compileCapsule, compileZoneCapsule, findSimilarRoutes } from "../memory/capsule.js";
 import { resolveTarget, computeImpact } from "../memory/impact.js";
 import { syncInBackground } from "../memory/sync.js";
+import { ensureWatcher } from "../memory/reindex.js";
 
 // ── `kurtel hook <event>`: appelé par Claude Code. JSON stdin → stdout, exit 0 TOUJOURS (un hook qui crashe ne doit jamais casser la session). ──
 
@@ -69,6 +70,8 @@ export async function hookCommand(event: string): Promise<void> {
 
 function onSessionStart(root: string, input: HookInput): void {
   syncInBackground(root);
+  // Garde le watcher de réindexation vivant (relance après reboot / fermeture de terminal).
+  ensureWatcher(root);
 
   const index = loadIndex(root);
   const cache = loadMemoryCache(root);

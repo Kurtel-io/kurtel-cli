@@ -6,6 +6,7 @@ import { buildIndex, renderReport } from "../memory/indexer.js";
 import { repoRoot, saveIndex, reportPath, loadMemoryCache, saveModuleVectors } from "../memory/store.js";
 import { embeddingsAvailable, buildModuleVectors } from "../memory/embed.js";
 import { syncIndexUp, syncNow } from "../memory/sync.js";
+import { ensureWatcher } from "../memory/reindex.js";
 
 export interface OnboardOptions {
   /** Sortie JSON compacte pour consommation par l'agent (slash command). */
@@ -55,6 +56,10 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
     }
   }
 
+  // Réindexation continue: démarre le watcher détaché pour que le graphe reste
+  // juste même quand l'utilisateur code à la main, sans jamais relancer onboard.
+  ensureWatcher(root);
+
   if (opts.json) {
     process.stdout.write(JSON.stringify({
       ok: true,
@@ -82,5 +87,6 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
   console.log("");
   console.log(`${symbols.check} Full report: ${c.indigo(rp)}`);
   console.log(`${c.dim("Memory is now")} ${c.indigo("active")}${c.dim(" — context is injected per task in Claude Code.")}`);
+  console.log(`${c.dim("Live reindex")} ${c.indigo("on")}${c.dim(" — the graph follows your edits automatically (")}${c.indigo("kurtel watch status")}${c.dim(").")}`);
   console.log("");
 }

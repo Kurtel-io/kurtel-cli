@@ -16,6 +16,7 @@ import { memoryCommand } from "./commands/memory.js";
 import { installClaudeCodeCommand, uninstallClaudeCodeCommand } from "./commands/installClaudeCode.js";
 import { hookCommand } from "./commands/hook.js";
 import { impactCommand } from "./commands/impact.js";
+import { watchCommand } from "./commands/watch.js";
 
 const program = new Command();
 
@@ -160,6 +161,13 @@ program
   .option("--max <n>", "Max words to import (vectors import)")
   .option("--out <dir>", "Output dir for the built table (vectors import; default ~/.kurtel/vectors)")
   .action(async (action, args, opts) => memoryCommand(action, opts, args));
+
+program
+  .command("watch")
+  .description("Continuously reindex this repo as files change (auto-starts on onboard)")
+  .argument("[action]", "start | stop | status", "start")
+  .option("--daemon", "Run silently in the background (used by auto-start)", false)
+  .action(async (action: string, opts) => watchCommand(action, opts));
 
 // Appelée par Claude Code via les hooks — pas par un humain. Cachée du help.
 program
