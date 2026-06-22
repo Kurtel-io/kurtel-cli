@@ -2,7 +2,20 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+
+/**
+ * Lance git directement (pas via cmd.exe) et SANS fenêtre console.
+ * `windowsHide` évite le flash de terminal sous Windows quand l'appelant
+ * (le watcher détaché) n'a pas de console attachée.
+ */
+function git(args: string[], cwd: string): string {
+  return execFileSync("git", args, {
+    cwd,
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+  }).toString().trim();
+}
 
 // ── Types ──
 
@@ -91,8 +104,7 @@ export interface TelemetryEvent {
 
 export function repoRoot(cwd = process.cwd()): string {
   try {
-    return execSync("git rev-parse --show-toplevel", { cwd, stdio: ["ignore", "pipe", "ignore"] })
-      .toString().trim();
+    return git(["rev-parse", "--show-toplevel"], cwd);
   } catch {
     return cwd;
   }
@@ -101,8 +113,7 @@ export function repoRoot(cwd = process.cwd()): string {
 export function repoSlug(root: string): string {
   let name = root.split(/[\\/]/).filter(Boolean).pop() ?? "repo";
   try {
-    const url = execSync("git remote get-url origin", { cwd: root, stdio: ["ignore", "pipe", "ignore"] })
-      .toString().trim();
+    const url = git(["remote", "get-url", "origin"], root);
     const m = url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/);
     if (m) name = m[1];
   } catch { /* pas de remote */ }
@@ -112,8 +123,7 @@ export function repoSlug(root: string): string {
 /** Branche git courante. "main" par défaut (détaché / pas un repo git). */
 export function currentBranch(root: string): string {
   try {
-    const b = execSync("git rev-parse --abbrev-ref HEAD", { cwd: root, stdio: ["ignore", "pipe", "ignore"] })
-      .toString().trim();
+    const b = git(["rev-parse", "--abbrev-ref", "HEAD"], root);
     // HEAD détaché → "HEAD": on retombe sur main pour ne pas créer une branche fantôme.
     if (b && b !== "HEAD") return b;
   } catch { /* pas un repo git */ }
@@ -122,8 +132,7 @@ export function currentBranch(root: string): string {
 
 export function repoFullName(root: string): string {
   try {
-    const url = execSync("git remote get-url origin", { cwd: root, stdio: ["ignore", "pipe", "ignore"] })
-      .toString().trim();
+    const url = git(["remote", "get-url", "origin"], root);
     const m = url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git?)?$/);
     if (m) return m[1].replace(/\.git$/, "");
   } catch { /* ignore */ }

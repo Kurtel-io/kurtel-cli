@@ -18,7 +18,7 @@ export function openBrowser(url: string): boolean {
       args = [url];
     }
 
-    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    const child = spawn(command, args, { stdio: "ignore", detached: true, windowsHide: true });
     child.on("error", () => {});
     child.unref();
     return true;

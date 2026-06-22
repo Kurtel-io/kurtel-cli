@@ -20,7 +20,7 @@ const BLOCK = [
 
 function gitOut(root: string, args: string[]): string | null {
   try {
-    return execFileSync("git", args, { cwd: root, stdio: ["ignore", "pipe", "ignore"] })
+    return execFileSync("git", args, { cwd: root, stdio: ["ignore", "pipe", "ignore"], windowsHide: true })
       .toString().trim() || null;
   } catch {
     return null;

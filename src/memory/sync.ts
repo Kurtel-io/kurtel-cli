@@ -57,6 +57,7 @@ export function syncInBackground(root: string): void {
       cwd: root,
       stdio: "ignore",
       detached: true,
+      windowsHide: true,
       env: process.env,
     });
     child.on("error", () => {});

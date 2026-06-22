@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, extname, dirname, sep } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import type { CodebaseIndex, ModuleNode, RouteEntry } from "./store.js";
 import { repoFullName, currentBranch } from "./store.js";
 import { extractFileAst, nextRouteFor } from "./ast.js";
@@ -356,7 +356,7 @@ export async function buildIndex(root: string, onProgress?: (n: number) => void)
 
   let commit = "unknown";
   try {
-    commit = execSync("git rev-parse HEAD", { cwd: root, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).toString().trim();
   } catch { /* pas un repo git */ }
 
   return {

@@ -23,6 +23,7 @@ function git(root: string, args: string[]): string {
     cwd: root,
     stdio: ["ignore", "pipe", "ignore"],
     maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true,
   }).toString();
 }
 
