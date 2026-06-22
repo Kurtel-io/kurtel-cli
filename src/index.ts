@@ -44,7 +44,7 @@ program
   .description("Launch a cloud agent on a task")
   .argument("[task...]", "What you want the agent to do")
   .option("-r, --repo <repo>", "Target repository (owner/name or URL)")
-  .option("-b, --branch <branch>", "Base branch", "main")
+  .option("-b, --branch <branch>", "Base branch (default: current git branch)")
   .option("-e, --engine <engine>", "Engine: claude-code | codex")
   .option("-m, --model <model>", "Model to use (engine-specific, optional)")
   .action(async (taskParts: string[], opts) => {
