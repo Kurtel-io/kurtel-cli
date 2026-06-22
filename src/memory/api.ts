@@ -53,3 +53,37 @@ export function pushIndex(repo: string, index: CodebaseIndex): Promise<{ ok: boo
 export function pushTelemetry(repo: string, events: TelemetryEvent[]): Promise<{ ok: boolean }> {
   return authed("POST", `/api/memory/telemetry${q(repo)}`, { events });
 }
+
+/** Apprentissage local: diff d'un commit (distillé) ou règle explicite. */
+export interface LearnPayload {
+  source: "commit" | "explicit";
+  commit_sha?: string;
+  change_fp?: string;
+  message?: string;
+  diff?: string;
+  rules?: string[];
+}
+export function postLearnEvent(
+  repo: string,
+  payload: LearnPayload
+): Promise<{ ok: boolean; learned?: number; violations?: number; skipped?: string }> {
+  return authed("POST", `/api/memory/learn${q(repo)}`, payload);
+}
+
+/** Import des skills écrits à la main (onboarding) → patterns distillés côté backend. */
+export interface SkillDocPayload {
+  path: string;
+  content: string;
+}
+export function pushSkills(
+  repo: string,
+  docs: SkillDocPayload[]
+): Promise<{
+  ok: boolean;
+  imported?: number;
+  merged?: number;
+  docs_processed?: number;
+  docs_skipped?: number;
+}> {
+  return authed("POST", `/api/memory/skills${q(repo)}`, { docs });
+}

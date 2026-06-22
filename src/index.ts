@@ -17,6 +17,7 @@ import { installClaudeCodeCommand, uninstallClaudeCodeCommand } from "./commands
 import { hookCommand } from "./commands/hook.js";
 import { impactCommand } from "./commands/impact.js";
 import { watchCommand } from "./commands/watch.js";
+import { learnCommand, learnCommitCommand } from "./commands/learn.js";
 
 const program = new Command();
 
@@ -168,6 +169,17 @@ program
   .argument("[action]", "start | stop | status", "start")
   .option("--daemon", "Run silently in the background (used by auto-start)", false)
   .action(async (action: string, opts) => watchCommand(action, opts));
+
+program
+  .command("learn")
+  .description("Teach Kurtel an explicit rule for this repo (injected to the agent immediately)")
+  .argument("<rule>", "The rule to remember, in quotes")
+  .action(async (rule: string) => learnCommand(rule));
+
+// Appelée par le hook git post-commit — pas par un humain. Cachée du help.
+program
+  .command("learn-commit", { hidden: true })
+  .action(async () => learnCommitCommand());
 
 // Appelée par Claude Code via les hooks — pas par un humain. Cachée du help.
 program

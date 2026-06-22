@@ -20,11 +20,13 @@ export interface KurtelConfig {
 // Where the CLI talks to. Override with KURTEL_API_URL for local dev, e.g.
 //   KURTEL_API_URL=http://localhost:3000 kurtel login
 export function apiUrl(): string {
-  return (
+  const raw =
     process.env.KURTEL_API_URL ??              // 1. variable d'env (override)
     (loadConfig().apiUrl as string | undefined) ?? // 2. clé "apiUrl" du config local
-    "https://kurtel-app.vercel.app/"                     // 3. valeur par défaut codée en dur
-  );
+    "https://kurtel-app.vercel.app";                // 3. valeur par défaut codée en dur
+  // On retire le(s) slash(es) final(aux): les chemins commencent par "/", sinon on
+  // construirait "https://host//api/…" (double slash → 404 possible côté Next/Vercel).
+  return raw.replace(/\/+$/, "");
 }
 
 export function saveSession(session: {

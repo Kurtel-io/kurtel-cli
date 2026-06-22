@@ -12,7 +12,25 @@ import { loadModuleVectors } from "./store.js";
 // Tout se calcule en local, en millisecondes, sans réseau.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TOKEN_BUDGET_CHARS = 1600; // ~400 tokens
+const TOKEN_BUDGET_CHARS = 2400; // ~600 tokens — budget rempli en skills ENTIERS
+const MAX_PATTERNS = 20;         // borne haute; le budget en lignes fait le vrai tri
+
+// Assemble des lignes ENTIÈRES sous un budget de caractères: on n'ajoute que des
+// lignes complètes et on s'arrête net — jamais de règle coupée en plein milieu
+// (qui ferait lire à l'agent du texte tronqué = bruit, voire fausse info).
+function fitLines(parts: string[], budget: number): string {
+  const out: string[] = [];
+  let len = 0;
+  for (const line of parts) {
+    const add = line.length + 1;
+    if (len + add > budget) break;
+    out.push(line);
+    len += add;
+  }
+  // Pas d'en-tête de section orphelin en fin (ligne finissant par ":").
+  while (out.length && out[out.length - 1].trimEnd().endsWith(":")) out.pop();
+  return out.join("\n");
+}
 const STOPWORDS = new Set([
   "the", "a", "an", "to", "for", "of", "in", "on", "and", "or", "with", "add",
   "create", "make", "fix", "update", "change", "new", "page", "file", "please",
@@ -41,6 +59,7 @@ export interface SemanticContext {
 const SEM_FLOOR = 0.30;
 const SEM_WEIGHT_ZONE = 8;
 const SEM_WEIGHT_ROUTE = 4;
+const SEM_WEIGHT_PATTERN = 10; // un fort match sémantique vaut ~1 hit de trigger lexical
 
 function semScore(sem: SemanticContext | undefined, id: string, weight: number): number {
   if (!sem?.q || !sem.mvec) return 0;
@@ -48,6 +67,20 @@ function semScore(sem: SemanticContext | undefined, id: string, weight: number):
   if (!v) return 0;
   const cs = cosine(sem.q, v);
   return cs > SEM_FLOOR ? (cs - SEM_FLOOR) * weight : 0;
+}
+
+// Score sémantique d'un PATTERN: cosinus entre le prompt (FR) et le vecteur des
+// triggers du skill (EN), via la table alignée. C'est ce qui surface une convention
+// pertinente quand le vocabulaire diffère (paraphrase, FR↔EN) — sans recouvrement
+// lexical de triggers. Le vecteur du skill est calculé à la volée (peu de patterns).
+function semPatternScore(sem: SemanticContext | undefined, p: DarwinPattern): number {
+  if (!sem?.q) return 0;
+  const toks = p.triggers.length ? p.triggers : tokenize(p.rule);
+  if (!toks.length) return 0;
+  const v = embedTokens(toks);
+  if (!v) return 0;
+  const cs = cosine(sem.q, v);
+  return cs > SEM_FLOOR ? (cs - SEM_FLOOR) * SEM_WEIGHT_PATTERN : 0;
 }
 
 // ── Résolution spatiale: quelles zones du repo l'intention touche-t-elle ? ──
@@ -88,7 +121,8 @@ export function selectPatterns(
   patterns: DarwinPattern[],
   promptTokens: string[],
   zones: string[],
-  max = 5
+  max = MAX_PATTERNS,
+  sem?: SemanticContext
 ): SelectedPattern[] {
   const out: SelectedPattern[] = [];
   for (const p of patterns) {
@@ -102,6 +136,10 @@ export function selectPatterns(
     for (const z of p.zones) {
       if (zones.some((zone) => zone.startsWith(z) || z.startsWith(zone))) s += 3;
     }
+    // Pont sémantique: surface un skill pertinent même SANS recouvrement lexical de
+    // triggers (paraphrase, FR↔EN). Critique quand la mémoire est la source primaire
+    // (remplace un AGENTS.md): un raté de routage = la convention n'atteint pas l'agent.
+    s += semPatternScore(sem, p);
     if (p.zones.length === 0 && s > 0) s += 1; // global + déjà pertinent
     if (s > 0) out.push({ pattern: p, score: s * (0.5 + p.score) });
   }
@@ -212,15 +250,16 @@ export function compileCapsule(
 
   // Contexte sémantique (optionnel, synchrone): pont FR→EN. Silencieux si pas de table.
   let sem: SemanticContext | undefined;
-  if (index && root && embeddingsAvailable()) {
-    const mvec = loadModuleVectors(root);
+  if (embeddingsAvailable()) {
     // On embed les tokens DÉJÀ filtrés (sans stopwords) — averager le prompt brut
-    // diluerait le signal et écraserait la discrimination entre zones.
-    if (mvec) sem = { q: embedTokens(tokens), mvec };
+    // diluerait le signal. `q` seul suffit au routage sémantique des skills; les
+    // vecteurs de modules (si présents) enrichissent en plus les zones/routes.
+    const q = embedTokens(tokens);
+    if (q) sem = { q, mvec: index && root ? loadModuleVectors(root) : null };
   }
 
   const zones = index ? resolveZones(index, tokens, sem) : [];
-  const selected = selectPatterns(patterns, tokens, zones);
+  const selected = selectPatterns(patterns, tokens, zones, MAX_PATTERNS, sem);
   const routes = index ? relevantRoutes(index, tokens, sem) : [];
   const reuse = index ? reuseTargets(index, tokens, zones, root) : [];
   const gods = index
@@ -229,8 +268,21 @@ export function compileCapsule(
 
   if (!selected.length && !routes.length && !reuse.length && !gods.length) return null; // le silence est le défaut
 
+  const header = `[Kurtel memory — auto-injected, relevant to this task only]`;
+
+  // Un `pinned` est un override humain: il prime sur l'anti-bruit. On le rend EN
+  // PREMIER et on l'EXEMPTE du budget — il ne doit jamais être évincé par un encart
+  // de routes/reuse. Seul le reste passe sous `fitLines`.
+  const pinnedSel = selected.filter((s) => s.pattern.pinned);
+  const restSel = selected.filter((s) => !s.pattern.pinned);
+
+  const pinnedParts: string[] = [];
+  if (pinnedSel.length) {
+    pinnedParts.push(`Pinned conventions (always apply):`);
+    for (const { pattern } of pinnedSel) pinnedParts.push(`- ${pattern.rule}`);
+  }
+
   const parts: string[] = [];
-  parts.push(`[Kurtel memory — auto-injected, relevant to this task only]`);
 
   if (routes.length) {
     parts.push(`Existing routes in this area (do NOT recreate; extend or reuse):`);
@@ -242,9 +294,9 @@ export function compileCapsule(
     for (const r of reuse) parts.push(`- ${r.sig ?? `${r.name}(…)`} → ${r.file}:${r.line}`);
   }
 
-  if (selected.length) {
+  if (restSel.length) {
     parts.push(`Team conventions learned from merged PRs (follow them):`);
-    for (const { pattern } of selected) {
+    for (const { pattern } of restSel) {
       const conf = Math.round(pattern.score * 100);
       parts.push(`- ${pattern.rule} (confidence ${conf}%)`);
     }
@@ -255,10 +307,20 @@ export function compileCapsule(
     for (const g of gods) parts.push(`- ${g.id} (${g.degree} edges)`);
   }
 
-  let text = parts.join("\n");
-  if (text.length > TOKEN_BUDGET_CHARS) text = text.slice(0, TOKEN_BUDGET_CHARS - 1) + "…";
+  // Le bloc pinned est garanti; le budget restant ne s'applique qu'au reste.
+  const pinnedText = pinnedParts.join("\n");
+  const remaining = TOKEN_BUDGET_CHARS - (pinnedText ? pinnedText.length + 1 : 0);
+  const restText = fitLines(parts, Math.max(0, remaining));
+  const text = [header, pinnedText, restText].filter(Boolean).join("\n");
 
-  return { text, injectedPatternIds: selected.map((s) => s.pattern.id), zones };
+  // Télémétrie honnête: les pinned sont toujours présents; pour le reste, on ne
+  // compte que les patterns réellement rendus (une ligne sautée au budget ne compte pas).
+  const injectedPatternIds = [
+    ...pinnedSel.map((s) => s.pattern.id),
+    ...restSel.filter((s) => restText.includes(s.pattern.rule)).map((s) => s.pattern.id),
+  ];
+
+  return { text, injectedPatternIds, zones };
 }
 
 // ── Capsule de zone (dérive d'intention en cours de session) ────────────────
@@ -287,9 +349,12 @@ export function compileZoneCapsule(
     for (const r of zoneRoutes) parts.push(`- ${r.method} ${r.path} (${r.file}:${r.line})`);
   }
 
-  let text = parts.join("\n");
-  if (text.length > 800) text = text.slice(0, 799) + "…";
-  return { text, injectedPatternIds: zonePatterns.map((p) => p.id), zones: [zone] };
+  const text = fitLines(parts, 900);
+  return {
+    text,
+    injectedPatternIds: zonePatterns.filter((p) => text.includes(p.rule)).map((p) => p.id),
+    zones: [zone],
+  };
 }
 
 export { findSimilarRoutes };

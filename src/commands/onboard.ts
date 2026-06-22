@@ -3,10 +3,14 @@ import { join } from "node:path";
 import { c, symbols } from "../ui/colors.js";
 import { Spinner } from "../ui/spinner.js";
 import { buildIndex, renderReport } from "../memory/indexer.js";
-import { repoRoot, saveIndex, reportPath, loadMemoryCache, saveModuleVectors } from "../memory/store.js";
+import { repoRoot, saveIndex, reportPath, loadMemoryCache, saveModuleVectors, repoFullName } from "../memory/store.js";
 import { embeddingsAvailable, buildModuleVectors } from "../memory/embed.js";
 import { syncIndexUp, syncNow } from "../memory/sync.js";
 import { ensureWatcher } from "../memory/reindex.js";
+import { installCommitHook } from "../memory/githook.js";
+import { collectSkillDocs } from "../memory/skills.js";
+import { pushSkills } from "../memory/api.js";
+import { loadConfig } from "../lib/config.js";
 
 export interface OnboardOptions {
   /** Sortie JSON compacte pour consommation par l'agent (slash command). */
@@ -42,23 +46,47 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
 
   let uploaded = false;
   let patterns = 0;
+  let skillsImported = 0;
   if (!opts.local) {
     const spin2 = opts.json ? null : new Spinner("Syncing memory with Kurtel cloud…").start();
     uploaded = await syncIndexUp(root);
+
+    // Import des skills écrits à la main → patterns (UNIQUEMENT si connecté).
+    // Non connecté = on ne fait que le graphe. Best-effort, jamais bloquant.
+    // Placé AVANT le pull pour que les patterns importés redescendent dans le cache.
+    if (loadConfig().token) {
+      try {
+        const docs = collectSkillDocs(root);
+        if (docs.length) {
+          spin2?.update(`Importing ${docs.length} existing skill doc(s)…`);
+          const r = await pushSkills(repoFullName(root), docs);
+          skillsImported = r.imported ?? 0;
+        }
+      } catch { /* offline / not signed in: skip silently */ }
+    }
+
     try {
       const r = await syncNow(root);
       patterns = loadMemoryCache(root).patterns.length;
       void r;
     } catch { /* offline ok */ }
     if (spin2) {
-      if (uploaded) spin2.succeed(`Memory synced · ${patterns} team patterns pulled`);
-      else spin2.fail("Cloud sync failed (offline or not signed in) — memory works locally; run `kurtel memory sync` later.");
+      if (uploaded) {
+        const extra = skillsImported ? ` · ${skillsImported} imported from your skills` : "";
+        spin2.succeed(`Memory synced · ${patterns} team patterns pulled${extra}`);
+      } else {
+        spin2.fail("Cloud sync failed (offline or not signed in) — memory works locally; run `kurtel memory sync` later.");
+      }
     }
   }
 
   // Réindexation continue: démarre le watcher détaché pour que le graphe reste
   // juste même quand l'utilisateur code à la main, sans jamais relancer onboard.
   ensureWatcher(root);
+
+  // Apprentissage à chaque commit, quel que soit l'outil (Claude Code, Codex, ou
+  // aucun agent): un hook git post-commit, indépendant du daemon.
+  const hookInstalled = installCommitHook(root);
 
   if (opts.json) {
     process.stdout.write(JSON.stringify({
@@ -72,6 +100,8 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
       report_path: rp,
       uploaded,
       patterns_loaded: patterns,
+      skills_imported: skillsImported,
+      auto_learn: hookInstalled,
     }));
     return;
   }
@@ -88,5 +118,8 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
   console.log(`${symbols.check} Full report: ${c.indigo(rp)}`);
   console.log(`${c.dim("Memory is now")} ${c.indigo("active")}${c.dim(" — context is injected per task in Claude Code.")}`);
   console.log(`${c.dim("Live reindex")} ${c.indigo("on")}${c.dim(" — the graph follows your edits automatically (")}${c.indigo("kurtel watch status")}${c.dim(").")}`);
+  if (hookInstalled) {
+    console.log(`${c.dim("Auto-learn")} ${c.indigo("on")}${c.dim(" — every commit teaches Kurtel, with any tool (no agent required).")}`);
+  }
   console.log("");
 }

@@ -1,5 +1,5 @@
-import { watch as fsWatch, writeFileSync, rmSync, mkdirSync } from "node:fs";
-import { extname, dirname } from "node:path";
+import { watch as fsWatch, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
+import { extname, dirname, join } from "node:path";
 import { repoRoot, repoFullName, currentBranch, memoryEnabled } from "../memory/store.js";
 import {
   reindexNow,
@@ -7,6 +7,7 @@ import {
   watcherRunning,
   pidFilePath,
 } from "../memory/reindex.js";
+import { learnFromCommit } from "../memory/learn.js";
 import { c, symbols } from "../ui/colors.js";
 
 // ── `kurtel watch`: réindexation continue, universelle (tout éditeur, pas que Claude Code) ──
@@ -63,6 +64,7 @@ function runDaemon(root: string, silent: boolean): Promise<void> {
     let running = false;
     let dirty = false;
     let stopped = false;
+    let gitWatcher: ReturnType<typeof fsWatch> | null = null;
 
     const log = (s: string) => { if (!silent) console.log(s); };
 
@@ -72,8 +74,16 @@ function runDaemon(root: string, silent: boolean): Promise<void> {
       if (timer) clearTimeout(timer);
       clearInterval(poll);
       try { watcher?.close(); } catch { /* */ }
+      try { gitWatcher?.close(); } catch { /* */ }
       try { rmSync(pidFilePath(root), { force: true }); } catch { /* */ }
       resolve();
+    }
+
+    // Apprentissage local: tout nouveau commit du dev est un signal. Lecture seule,
+    // silencieux, best effort — jamais bloquant pour le reindex.
+    function checkCommit(): void {
+      if (stopped) return;
+      void learnFromCommit(root).catch(() => { /* best effort */ });
     }
 
     async function fire(): Promise<void> {
@@ -118,9 +128,21 @@ function runDaemon(root: string, silent: boolean): Promise<void> {
       log(`${c.yellow(symbols.warn)} ${c.dim("recursive watch unavailable — relying on polling.")}`);
     }
 
-    // Filet universel: poll d'empreinte de contenu (structure + mtimes).
+    // Signal bas-latence pour les commits: .git/logs/HEAD reçoit une ligne à chaque
+    // mouvement de HEAD (commit, reset…). fs.watch dessus → apprentissage immédiat.
+    try {
+      const gitLog = join(root, ".git", "logs", "HEAD");
+      if (existsSync(gitLog)) {
+        gitWatcher = fsWatch(gitLog, () => checkCommit());
+        gitWatcher.on("error", () => { /* le poll reste le filet */ });
+      }
+    } catch { /* pas de reflog (worktree/submodule): le poll prend le relais */ }
+
+    // Filet universel: poll d'empreinte de contenu (structure + mtimes) + commits.
     const poll = setInterval(() => {
-      if (running || stopped) return;
+      if (stopped) return;
+      checkCommit(); // peu coûteux: un rev-parse + comparaison, ne fait rien si HEAD inchangé
+      if (running) return;
       try {
         const fp = contentFingerprint(root);
         if (fp !== lastFp) { lastFp = fp; schedule(); }
@@ -131,6 +153,7 @@ function runDaemon(root: string, silent: boolean): Promise<void> {
     // Baseline: une reconstruction au démarrage garantit un index frais immédiatement.
     lastFp = contentFingerprint(root);
     void fire();
+    checkCommit(); // rattrape un éventuel commit fait pendant que le watcher était arrêté
 
     process.on("SIGTERM", cleanup);
     process.on("SIGINT", cleanup);

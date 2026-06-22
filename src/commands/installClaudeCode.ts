@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { c, symbols } from "../ui/colors.js";
 import { loadConfig } from "../lib/config.js";
 import { repoRoot } from "../memory/store.js";
+import { installCommitHook, uninstallCommitHook } from "../memory/githook.js";
 
 // ── install/uninstall claude-code: slash commands + hooks dans .claude/ ──
 // Hooks mergés en JSON structuré, jamais par manipulation de chaîne.
@@ -235,6 +236,11 @@ export async function installClaudeCodeCommand(): Promise<void> {
   writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + "\n", "utf8");
   console.log(`${symbols.check} Hooks wired into ${c.indigo(".claude/settings.json")} ${c.dim("(SessionStart, UserPromptSubmit, PostToolUse, SessionEnd)")}`);
 
+  // Apprentissage à chaque commit, indépendant de Claude Code (tout outil, sans agent).
+  if (installCommitHook(root)) {
+    console.log(`${symbols.check} Git ${c.indigo("post-commit")} hook installed ${c.dim("— every commit teaches Kurtel (works with any tool).")}`);
+  }
+
   console.log("");
   console.log(`${c.dim("Next: open Claude Code in this repo and run")} ${c.indigo("/kurtel:onboard")} ${c.dim("to index the codebase.")}`);
   console.log(`${c.dim("Memory is")} ${c.indigo("on")} ${c.dim("by default — toggle with")} ${c.indigo("/kurtel:memory off")}${c.dim(".")}`);
@@ -256,5 +262,8 @@ export async function uninstallClaudeCodeCommand(): Promise<void> {
       return;
     }
   }
+
+  uninstallCommitHook(root);
+  console.log(`${symbols.check} Git post-commit auto-learn hook removed ${c.dim("(third-party hooks untouched)")}`);
   console.log(`${c.dim("You can delete")} ${c.indigo(".claude/commands/kurtel/")} ${c.dim("to remove the slash commands.")}`);
 }
