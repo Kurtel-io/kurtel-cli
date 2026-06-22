@@ -23,7 +23,7 @@ export function apiUrl(): string {
   const raw =
     process.env.KURTEL_API_URL ??              // 1. variable d'env (override)
     (loadConfig().apiUrl as string | undefined) ?? // 2. clé "apiUrl" du config local
-    "https://kurtel-app.vercel.app";                // 3. valeur par défaut codée en dur
+    "https://www.kurtel.io";                // 3. valeur par défaut codée en dur
   // On retire le(s) slash(es) final(aux): les chemins commencent par "/", sinon on
   // construirait "https://host//api/…" (double slash → 404 possible côté Next/Vercel).
   return raw.replace(/\/+$/, "");
