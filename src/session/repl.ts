@@ -2,6 +2,8 @@ import * as readline from "node:readline";
 import { c, symbols } from "../ui/colors.js";
 import { banner, welcomeBox } from "../ui/banner.js";
 import { loadConfig } from "../lib/config.js";
+import { isEngineName } from "../lib/engines.js";
+import { repoRoot, repoFullName, currentBranch } from "../memory/store.js";
 import { agentsCommand } from "../commands/agents.js";
 import { loginCommand } from "../commands/auth.js";
 import { configCommand } from "../commands/config.js";
@@ -57,10 +59,17 @@ async function launchFromPrompt(
   task: string
 ): Promise<void> {
   const cfg = loadConfig();
-  const defBranch = cfg.defaultBranch || "main";
-  const defEngine = cfg.engine || "claude-code";
+  // Défauts déduits du git courant (cohérent avec `kurtel run`): repo = remote
+  // origin, branche = branche courante. On retombe sur la config / "main" sinon.
+  const root = repoRoot();
+  const inferredRepo = repoFullName(root);
+  const defRepo = inferredRepo.includes("/") ? inferredRepo : "";
+  const defBranch = currentBranch(root) || cfg.defaultBranch || "main";
+  // cfg.engine peut valoir un libellé non-engine (ex. "kurtel-sota (…)"): on ne
+  // l'utilise comme défaut que s'il est un engine valide, sinon claude-code.
+  const defEngine = isEngineName(String(cfg.engine)) ? String(cfg.engine) : "claude-code";
 
-  let repo = "";
+  let repo = defRepo;
   let branch = defBranch;
   let engine = defEngine;
   let model = "";
@@ -68,10 +77,13 @@ async function launchFromPrompt(
   asking = true;
   try {
     console.log("");
-    repo = await ask(
-      rl,
-      `  ${c.gray("repo")}    ${c.dim("(owner/name, empty for none)")} ${c.indigo(symbols.arrow)} `
-    );
+    repo =
+      (await ask(
+        rl,
+        `  ${c.gray("repo")}    ${c.dim(defRepo ? `(default ${defRepo}, "-" for none)` : "(owner/name, empty for none)")} ${c.indigo(symbols.arrow)} `
+      )) || defRepo;
+    // "-" = forcer aucun repo malgré le défaut git.
+    if (repo === "-") repo = "";
     branch =
       (await ask(
         rl,
@@ -90,11 +102,14 @@ async function launchFromPrompt(
     asking = false;
   }
 
+  // noResolve: le REPL a déjà tout demandé via SON readline — runCommand ne doit
+  // ni re-prompter (2e readline = conflit) ni ré-appliquer de défaut.
   const id = await runCommand(task, {
     repo: repo || undefined,
     branch,
     engine,
     model: model || undefined,
+    noResolve: true,
   });
 
   if (id) {

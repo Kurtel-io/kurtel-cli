@@ -9,6 +9,13 @@ export interface RunOptions {
   branch?: string;
   engine?: string;
   model?: string;
+  /**
+   * L'appelant a DÉJÀ résolu repo/branch/engine (ex. la session REPL, qui fait
+   * son propre prompt via son readline). On utilise alors les valeurs telles
+   * quelles: ni prompt ni défaut. Ouvrir un 2ᵉ readline ici re-demanderait le
+   * repo et entrerait en conflit avec celui de l'appelant.
+   */
+  noResolve?: boolean;
 }
 
 export async function runCommand(
@@ -40,25 +47,28 @@ export async function runCommand(
   // courant. Hors TTY (pipe / CI) on ne prompte jamais — on retombe sur les
   // défauts git pour ne pas bloquer. C'est ce qui manquait: avant, sans flags,
   // le run partait avec repo=null / branch=main sans rien demander ni déduire.
-  const root = repoRoot();
-  const inferredRepo = repoFullName(root);
-  // repoFullName retombe sur le nom du dossier s'il n'y a pas de remote: ce n'est
-  // un slug valide que s'il contient "owner/name".
-  const repoDefault = inferredRepo.includes("/") ? inferredRepo : undefined;
-  const branchDefault = currentBranch(root);
-
+  // noResolve: l'appelant (REPL) a déjà tout résolu → on n'y touche pas.
   let repo = opts.repo?.trim() || undefined;
   let branch = opts.branch?.trim() || undefined;
   let engine = opts.engine?.trim() || undefined;
 
-  if (isInteractive()) {
-    if (!repo) repo = (await ask("Repo (owner/name)", repoDefault)).trim() || undefined;
-    if (!branch) branch = (await ask("Base branch", branchDefault)).trim() || undefined;
-    if (!engine) engine = await select("Engine", [...ENGINE_NAMES], 0);
-  } else {
-    repo = repo ?? repoDefault;
-    branch = branch ?? branchDefault;
-    // engine non fourni: laissé au backend (défaut claude-code).
+  if (!opts.noResolve) {
+    const root = repoRoot();
+    const inferredRepo = repoFullName(root);
+    // repoFullName retombe sur le nom du dossier s'il n'y a pas de remote: ce
+    // n'est un slug valide que s'il contient "owner/name".
+    const repoDefault = inferredRepo.includes("/") ? inferredRepo : undefined;
+    const branchDefault = currentBranch(root);
+
+    if (isInteractive()) {
+      if (!repo) repo = (await ask("Repo (owner/name)", repoDefault)).trim() || undefined;
+      if (!branch) branch = (await ask("Base branch", branchDefault)).trim() || undefined;
+      if (!engine) engine = await select("Engine", [...ENGINE_NAMES], 0);
+    } else {
+      repo = repo ?? repoDefault;
+      branch = branch ?? branchDefault;
+      // engine non fourni: laissé au backend (défaut claude-code).
+    }
   }
 
   try {
