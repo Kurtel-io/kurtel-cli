@@ -85,6 +85,11 @@ export interface CodebaseIndex {
 export interface MemoryCache {
   patterns: DarwinPattern[];
   patterns_synced_at: string | null;
+  /** Dernier snapshot COMPLET (pas un delta). Sert à purger périodiquement les
+   *  orphelins: un skill hard-deleté côté serveur (suppression UI, ou table
+   *  vidée + ré-onboard) disparaît sans laisser de trace qu'un delta
+   *  (`updated_at > since`) puisse capter → il faut un pull complet pour le retirer. */
+  full_synced_at?: string | null;
   /** Télémétrie en attente d'envoi (fitness fin: usage des patterns). */
   pending_telemetry: TelemetryEvent[];
 }
@@ -160,7 +165,31 @@ function writeJSON(file: string, data: unknown): void {
 
 // ── Cache mémoire darwinienne (par user × repo, hors du repo: ne se versionne pas) ──
 
-const EMPTY_CACHE: MemoryCache = { patterns: [], patterns_synced_at: null, pending_telemetry: [] };
+const EMPTY_CACHE: MemoryCache = { patterns: [], patterns_synced_at: null, full_synced_at: null, pending_telemetry: [] };
+
+/**
+ * Dédoublonne des patterns par RÈGLE (contenu). Le delta sync fusionne par `id`,
+ * or un même contenu peut vivre sous plusieurs `id`: un ré-onboard réécrit la table
+ * avec de NOUVEAUX id, et les anciens — hard-deletés — ne sont jamais purgés par le
+ * delta (un id absent du serveur n'apparaît pas dans `updated_at > since`). Sans
+ * cette dédup, la capsule injecte la même règle deux fois → confiance détruite.
+ * On garde un seul représentant par règle: épinglé d'abord, puis meilleur score,
+ * puis le plus récemment mis à jour (= la génération vivante côté serveur).
+ */
+export function dedupePatterns(patterns: DarwinPattern[]): DarwinPattern[] {
+  const better = (a: DarwinPattern, b: DarwinPattern): boolean => {
+    if (!!a.pinned !== !!b.pinned) return !!a.pinned;
+    if (a.score !== b.score) return a.score > b.score;
+    return (a.updated_at ?? "") > (b.updated_at ?? "");
+  };
+  const best = new Map<string, DarwinPattern>();
+  for (const p of patterns) {
+    const key = p.rule.trim();
+    const cur = best.get(key);
+    if (!cur || better(p, cur)) best.set(key, p);
+  }
+  return [...best.values()];
+}
 
 export function loadMemoryCache(root: string): MemoryCache {
   return readJSON(join(cacheDir(root), "memory.json"), EMPTY_CACHE);

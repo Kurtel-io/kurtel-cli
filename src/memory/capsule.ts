@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { CodebaseIndex, DarwinPattern, RouteEntry } from "./store.js";
 import { findSimilarRoutes } from "./indexer.js";
 import { embeddingsAvailable, embedTokens, cosine } from "./embed.js";
-import { loadModuleVectors } from "./store.js";
+import { loadModuleVectors, dedupePatterns } from "./store.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Capsule — le cœur du produit. À chaque prompt:
@@ -248,6 +248,10 @@ export function compileCapsule(
   const tokens = tokenize(prompt);
   if (!tokens.length) return null;
 
+  // Défense au point d'injection: même si le cache contient des doublons (orphelins
+  // d'un ré-onboard non encore purgés), jamais deux fois la même règle dans la capsule.
+  patterns = dedupePatterns(patterns);
+
   // Contexte sémantique (optionnel, synchrone): pont FR→EN. Silencieux si pas de table.
   let sem: SemanticContext | undefined;
   if (embeddingsAvailable()) {
@@ -331,6 +335,7 @@ export function compileZoneCapsule(
   filePath: string
 ): CapsuleResult | null {
   const zone = filePath.includes("/") ? filePath.split("/").slice(0, 2).join("/") : filePath;
+  patterns = dedupePatterns(patterns);
   const zonePatterns = patterns.filter(
     (p) => p.score >= 0.3 && p.zones.some((z) => zone.startsWith(z) || z.startsWith(zone))
   ).sort((a, b) => b.score - a.score).slice(0, 3);
