@@ -154,9 +154,9 @@ program
 
 program
   .command("memory")
-  .description("Inspect or toggle Kurtel memory (status | on | off | sync | patterns | vectors)")
-  .argument("[action]", "status | on | off | sync | patterns | vectors", "status")
-  .argument("[args...]", "extra args (e.g. `vectors import <file.vec>`)")
+  .description("Inspect or toggle Kurtel memory (status | on | off | sync | patterns | preview | log | vectors)")
+  .argument("[action]", "status | on | off | sync | patterns | preview | log | vectors", "status")
+  .argument("[args...]", "extra args (e.g. `preview \"<prompt>\"`, `log clear`, `vectors import <file.vec>`)")
   .option("--json", "Machine-readable output", false)
   .option("--quiet", "No spinner/log output (used by background sync)", false)
   .option("--max <n>", "Max words to import (vectors import)")

@@ -6,9 +6,13 @@ import {
   loadMemoryCache,
   memoryEnabled,
   setMemoryEnabled,
+  injectionLogPath,
+  readInjectionLog,
+  clearInjectionLog,
 } from "../memory/store.js";
 import { syncNow } from "../memory/sync.js";
 import { importVecFile, vectorsInfo } from "../memory/embed.js";
+import { compileCapsule } from "../memory/capsule.js";
 
 function ago(iso: string | null): string {
   if (!iso) return "never";
@@ -93,6 +97,87 @@ export async function memoryCommand(
       return;
     }
 
+    case "log": {
+      // Journal local de TOUT ce que la mémoire a injecté, prompt par prompt.
+      const file = injectionLogPath(root);
+      if (args[0] === "clear") {
+        clearInjectionLog(root);
+        console.log(`${symbols.check} Injection journal cleared.`);
+        return;
+      }
+      if (args[0] === "path") { console.log(file); return; }
+
+      const tail = readInjectionLog(root, opts.max ? Number(opts.max) : 8000);
+      if (!tail) {
+        console.log(c.dim("No injections logged yet. The journal fills as you prompt with memory active."));
+        console.log(c.dim(`It will appear at ${file} (gitignored).`));
+        return;
+      }
+      console.log("");
+      console.log(`${c.gray("journal")}   ${c.dim(file)} ${c.dim("(gitignored · newest last)")}`);
+      console.log(c.dim("─".repeat(60)));
+      process.stdout.write(tail.endsWith("\n") ? tail : tail + "\n");
+      console.log(c.dim("─".repeat(60)));
+      console.log(c.dim(`Open the file for the full history · ${c.indigo("kurtel memory log clear")} to reset.`));
+      console.log("");
+      return;
+    }
+
+    case "preview":
+    case "inspect": {
+      // Montre EXACTEMENT ce que le hook `user-prompt-submit` injecterait pour un
+      // prompt donné. L'injection est déterministe et locale → ce preview EST ce
+      // que Claude Code reçoit, pas une approximation. (cf. hook.ts:onPrompt)
+      const prompt = (args ?? []).join(" ").trim();
+      if (!prompt) {
+        console.log(`${c.red(symbols.cross)} Usage: ${c.indigo('kurtel memory preview "<your prompt>"')}`);
+        process.exitCode = 1;
+        return;
+      }
+
+      const index = loadIndex(root);
+      const cache = loadMemoryCache(root);
+      const enabled = memoryEnabled(root);
+
+      // Mêmes gardes que le hook: prompts trop courts ou slash-commands = silence.
+      const skipped = !enabled
+        ? "memory is disabled for this repo (`kurtel memory on`)"
+        : prompt.length < 8
+        ? "prompt is under 8 chars — the hook stays silent"
+        : prompt.startsWith("/")
+        ? "prompt is a slash command — the hook stays silent"
+        : null;
+
+      const capsule = skipped ? null : compileCapsule(index, cache.patterns, prompt, root);
+
+      if (opts.json) {
+        process.stdout.write(JSON.stringify({
+          prompt,
+          would_inject: Boolean(capsule),
+          skipped_reason: skipped,
+          text: capsule?.text ?? null,
+          injected_pattern_ids: capsule?.injectedPatternIds ?? [],
+          zones: capsule?.zones ?? [],
+        }));
+        return;
+      }
+
+      console.log("");
+      console.log(`${c.gray("prompt")}    ${c.white(prompt)}`);
+      if (!capsule) {
+        console.log(`${c.gray("inject")}    ${c.yellow("○ nothing")} ${c.dim(`— ${skipped ?? "no relevant context (silence is the default)"}`)}`);
+        console.log("");
+        return;
+      }
+      console.log(`${c.gray("inject")}    ${c.indigo("● capsule")} ${c.dim(`(${capsule.text.length} chars · ${capsule.injectedPatternIds.length} patterns · zones: ${capsule.zones.join(", ") || "none"})`)}`);
+      console.log(c.dim("─".repeat(60)));
+      console.log(capsule.text);
+      console.log(c.dim("─".repeat(60)));
+      console.log(c.dim("This is the exact text added to the agent's context for this prompt."));
+      console.log("");
+      return;
+    }
+
     case undefined:
     case "status": {
       const enabled = memoryEnabled(root);
@@ -127,7 +212,7 @@ export async function memoryCommand(
 
     default:
       console.log(
-        `${c.red(symbols.cross)} Unknown action ${c.white(action)}. Try ${c.indigo("status")}, ${c.indigo("on")}, ${c.indigo("off")}, ${c.indigo("sync")}, or ${c.indigo("patterns")}.`
+        `${c.red(symbols.cross)} Unknown action ${c.white(action)}. Try ${c.indigo("status")}, ${c.indigo("on")}, ${c.indigo("off")}, ${c.indigo("sync")}, ${c.indigo("patterns")}, ${c.indigo("preview")}, or ${c.indigo("log")}.`
       );
       process.exitCode = 1;
   }

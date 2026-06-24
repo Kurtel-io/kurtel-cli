@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, renameSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 /**
@@ -188,6 +188,75 @@ export function indexPath(root: string): string {
 
 export function reportPath(root: string): string {
   return join(root, ".kurtel", "REPORT.md");
+}
+
+// ── Journal d'injection (dans le repo, gitignoré: ce que la mémoire a injecté) ──
+//   <repo>/.kurtel/injection-log.md  ← append-only, lisible, rotation O(1) par renommage.
+//   But: l'utilisateur ouvre ce fichier et voit, prompt par prompt, le texte exact
+//   ajouté au contexte de l'agent. Tout est déjà calculé localement par le hook → un
+//   simple append (sub-ms). Le hook est un process court: 1 stat + 1 append par prompt.
+
+export function injectionLogPath(root: string): string {
+  return join(root, ".kurtel", "injection-log.md");
+}
+
+const INJECTION_LOG_MAX_BYTES = 1_500_000; // ~1.5 Mo → rotation (on garde 1 génération précédente)
+
+/** Garantit que le journal est ignoré par git, même si `.kurtel/` ne l'est pas déjà.
+ *  Scopé aux fichiers du journal: ne touche pas index.json/REPORT.md (que l'utilisateur
+ *  peut vouloir versionner). Idempotent, best-effort. */
+function ensureInjectionLogIgnored(root: string): void {
+  const gi = join(root, ".kurtel", ".gitignore");
+  try {
+    const want = ["injection-log.md", "injection-log.old.md"];
+    const cur = existsSync(gi) ? readFileSync(gi, "utf8") : "";
+    const have = new Set(cur.split(/\r?\n/).map((l) => l.trim()));
+    const missing = want.filter((w) => !have.has(w));
+    if (!missing.length) return;
+    const header = cur ? "" : "# Kurtel local injection journal — machine-specific, never commit\n";
+    appendFileSync(gi, header + missing.join("\n") + "\n", "utf8");
+  } catch { /* best-effort: jamais bloquant */ }
+}
+
+/** Append une entrée pré-formatée au journal. JAMAIS d'erreur visible (un journal
+ *  qui casse ne doit pas casser l'injection). Rotation par renommage (zéro read sur
+ *  le hot path). Désactivable via `KURTEL_NO_INJECTION_LOG`. */
+export function appendInjectionLog(root: string, entry: string): void {
+  if (process.env.KURTEL_NO_INJECTION_LOG) return;
+  try {
+    const file = injectionLogPath(root);
+    const dir = join(file, "..");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    if (!existsSync(file)) ensureInjectionLogIgnored(root); // une seule fois, à la création
+    try {
+      if (statSync(file).size > INJECTION_LOG_MAX_BYTES) {
+        const old = file.replace(/\.md$/, ".old.md");
+        try { rmSync(old); } catch { /* pas d'ancienne génération */ } // Windows: rename échoue si la cible existe
+        renameSync(file, old);
+      }
+    } catch { /* fichier absent = premier write */ }
+    appendFileSync(file, entry, "utf8");
+  } catch { /* le journal ne doit jamais casser l'injection */ }
+}
+
+/** Tail du journal (les derniers `maxBytes` octets). null si vide/absent. */
+export function readInjectionLog(root: string, maxBytes = 8000): string | null {
+  try {
+    const file = injectionLogPath(root);
+    if (!existsSync(file)) return null;
+    const text = readFileSync(file, "utf8");
+    if (!text.trim()) return null;
+    return text.length > maxBytes ? "…\n" + text.slice(-maxBytes) : text;
+  } catch {
+    return null;
+  }
+}
+
+/** Vide le journal (et sa génération précédente). */
+export function clearInjectionLog(root: string): void {
+  for (const f of [injectionLogPath(root), injectionLogPath(root).replace(/\.md$/, ".old.md")]) {
+    try { rmSync(f); } catch { /* déjà absent */ }
+  }
 }
 
 // ── Embeddings sémantiques ──

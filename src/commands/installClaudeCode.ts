@@ -33,7 +33,7 @@ Run \`kurtel onboard --json\` with the Bash tool, then:
 Do not re-run indexing if the command fails twice; show the error instead.
 `,
   "memory.md": `---
-description: Toggle or inspect Kurtel memory (on / off / status / sync / patterns / vectors)
+description: Toggle or inspect Kurtel memory (on / off / status / sync / patterns / log / preview / vectors)
 allowed-tools: Bash(kurtel memory:*)
 ---
 The user said: "$ARGUMENTS"
@@ -41,6 +41,8 @@ The user said: "$ARGUMENTS"
 - If it contains "on" or "enable" → run \`kurtel memory on\`
 - If it contains "sync" → run \`kurtel memory sync\`
 - If it contains "pattern" → run \`kurtel memory patterns --json\` and present the patterns as a readable list (rule, confidence, zones, evidence count), sorted by confidence
+- If it contains "log" → the local injection journal (what memory actually injected, prompt by prompt). If it also contains "clear"/"reset" → run \`kurtel memory log clear\`. Otherwise run \`kurtel memory log\` and present the recent entries, then mention the full history lives in the gitignored file at \`<repo>/.kurtel/injection-log.md\`.
+- If it contains "preview" or "inspect" → the user wants to see what WOULD be injected for a given prompt. Take the rest of their text (everything after the keyword) as the prompt and run \`kurtel memory preview "<that prompt>"\`. If no prompt text was given, ask them what prompt to preview.
 - If it contains "vector" → run \`kurtel memory vectors status\` and report whether the cross-lingual table is installed (word count, dimension)
 - Otherwise → run \`kurtel memory status --json\` and present a one-line summary
 Relay the result conversationally. Never paste raw JSON to the user.

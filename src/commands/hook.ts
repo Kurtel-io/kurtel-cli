@@ -7,6 +7,7 @@ import {
   loadMemoryState,
   saveMemoryState,
   queueTelemetry,
+  appendInjectionLog,
 } from "../memory/store.js";
 import { compileCapsule, compileZoneCapsule, findSimilarRoutes } from "../memory/capsule.js";
 import { resolveTarget, computeImpact } from "../memory/impact.js";
@@ -35,12 +36,35 @@ function readStdin(): Promise<string> {
   });
 }
 
-function emitContext(event: string, context: string): void {
+function emitContext(
+  root: string,
+  event: string,
+  context: string,
+  meta?: { prompt?: string; file?: string }
+): void {
+  // 1. Ce que Claude Code lit (la seule chose critique): écrit en premier.
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: { hookEventName: event, additionalContext: context },
     })
   );
+  // 2. Journal local (best-effort, gitignoré): l'utilisateur voit prompt par prompt
+  //    le texte EXACT injecté. appendInjectionLog avale ses propres erreurs.
+  appendInjectionLog(root, formatLogEntry(event, context, meta));
+}
+
+// Entrée markdown lisible (rendu propre dans l'IDE) — append en bas, plus récent en dernier.
+function formatLogEntry(
+  event: string,
+  context: string,
+  meta?: { prompt?: string; file?: string }
+): string {
+  const ts = new Date().toISOString().replace("T", " ").replace(/\..+$/, "");
+  const lines = [``, `## ${ts} · ${event}`];
+  if (meta?.prompt) lines.push(`> ${meta.prompt.replace(/\s+/g, " ").trim()}`);
+  if (meta?.file) lines.push(`> file: ${meta.file}`);
+  lines.push(``, context, ``, `---`);
+  return lines.join("\n") + "\n";
 }
 
 export async function hookCommand(event: string): Promise<void> {
@@ -81,6 +105,7 @@ function onSessionStart(root: string, input: HookInput): void {
   if (index) bits.push(`codebase index: ${index.files_indexed} files, ${index.routes.length} routes (commit ${index.commit.slice(0, 8)})`);
   if (cache.patterns.length) bits.push(`${cache.patterns.length} team patterns loaded`);
   emitContext(
+    root,
     "SessionStart",
     `[Kurtel memory active — ${bits.join(", ")}. Relevant context will be injected per task.]`
   );
@@ -97,7 +122,7 @@ function onPrompt(root: string, input: HookInput): void {
   const capsule = compileCapsule(index, cache.patterns, prompt, root);
   if (!capsule) return;
 
-  emitContext("UserPromptSubmit", capsule.text);
+  emitContext(root, "UserPromptSubmit", capsule.text, { prompt });
 
   // mémorise les zones couvertes pour ne pas les répéter au PostToolUse
   const sid = input.session_id ?? "unknown";
@@ -191,7 +216,7 @@ function onPostToolUse(root: string, input: HookInput): void {
     }
   }
 
-  if (messages.length) emitContext("PostToolUse", messages.join("\n\n"));
+  if (messages.length) emitContext(root, "PostToolUse", messages.join("\n\n"), { file: filePath });
 }
 
 // ── SessionEnd / Stop: flush télémétrie en arrière-plan ──
