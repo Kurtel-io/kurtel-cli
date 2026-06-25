@@ -8,6 +8,7 @@ import {
   saveMemoryState,
   queueTelemetry,
   appendInjectionLog,
+  appendInjectedIds,
 } from "../memory/store.js";
 import { compileCapsule, compileZoneCapsule, findSimilarRoutes } from "../memory/capsule.js";
 import { resolveTarget, computeImpact } from "../memory/impact.js";
@@ -138,6 +139,9 @@ function onPrompt(root: string, input: HookInput): void {
       kind: "patterns_injected",
       pattern_ids: capsule.injectedPatternIds,
     });
+    // Sidecar structuré: corréler ces ids injectés avec une éventuelle VIOLATION
+    // dans le commit qui suit (signal "injected-then-violated", cf. learn.ts).
+    appendInjectedIds(root, capsule.injectedPatternIds);
   }
 }
 

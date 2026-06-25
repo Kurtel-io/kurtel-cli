@@ -237,7 +237,7 @@ const INJECTION_LOG_MAX_BYTES = 1_500_000; // ~1.5 Mo → rotation (on garde 1 g
 function ensureInjectionLogIgnored(root: string): void {
   const gi = join(root, ".kurtel", ".gitignore");
   try {
-    const want = ["injection-log.md", "injection-log.old.md"];
+    const want = ["injection-log.md", "injection-log.old.md", "injected.jsonl"];
     const cur = existsSync(gi) ? readFileSync(gi, "utf8") : "";
     const have = new Set(cur.split(/\r?\n/).map((l) => l.trim()));
     const missing = want.filter((w) => !have.has(w));
@@ -281,10 +281,67 @@ export function readInjectionLog(root: string, maxBytes = 8000): string | null {
   }
 }
 
-/** Vide le journal (et sa génération précédente). */
+/** Vide le journal (et sa génération précédente + le sidecar d'ids). */
 export function clearInjectionLog(root: string): void {
-  for (const f of [injectionLogPath(root), injectionLogPath(root).replace(/\.md$/, ".old.md")]) {
+  for (const f of [
+    injectionLogPath(root),
+    injectionLogPath(root).replace(/\.md$/, ".old.md"),
+    injectedIdsPath(root),
+  ]) {
     try { rmSync(f); } catch { /* déjà absent */ }
+  }
+}
+
+// ── Sidecar structuré des ids injectés (machine-readable, ≠ journal markdown) ──
+//   <repo>/.kurtel/injected.jsonl  ← une ligne {t, ids} par prompt injecté.
+//   But: corréler "règle injectée à l'agent" ↔ "règle violée par le commit qui suit"
+//   (signal négatif en OR "injected-then-violated"). Le markdown est pour l'humain;
+//   ce sidecar est pour la machine (parsing fiable, pas de regex sur du markdown).
+
+export function injectedIdsPath(root: string): string {
+  return join(root, ".kurtel", "injected.jsonl");
+}
+
+const INJECTED_MAX_BYTES = 200_000; // au-delà, on retaille à la fin (best-effort)
+const INJECTED_KEEP_LINES = 500;
+
+/** Append {t, ids} pour un prompt. Best-effort, jamais bloquant, gitignoré. */
+export function appendInjectedIds(root: string, ids: string[]): void {
+  if (!ids.length || process.env.KURTEL_NO_INJECTION_LOG) return;
+  try {
+    const file = injectedIdsPath(root);
+    const dir = join(file, "..");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    if (!existsSync(file)) ensureInjectionLogIgnored(root); // couvre injected.jsonl
+    // Retaille seulement quand le fichier grossit (pas de read sur le hot path normal).
+    try {
+      if (statSync(file).size > INJECTED_MAX_BYTES) {
+        const kept = readFileSync(file, "utf8").trim().split(/\r?\n/).slice(-INJECTED_KEEP_LINES);
+        writeFileSync(file, kept.join("\n") + "\n", "utf8");
+      }
+    } catch { /* fichier absent = premier write */ }
+    appendFileSync(file, JSON.stringify({ t: Date.now(), ids }) + "\n", "utf8");
+  } catch { /* le sidecar ne doit jamais casser l'injection */ }
+}
+
+/** Union des ids injectés depuis `sinceMs` (au plus `limit` dernières entrées). */
+export function readRecentInjectedIds(root: string, sinceMs: number, limit = 200): string[] {
+  try {
+    const file = injectedIdsPath(root);
+    if (!existsSync(file)) return [];
+    const lines = readFileSync(file, "utf8").trim().split(/\r?\n/).slice(-limit);
+    const out = new Set<string>();
+    for (const line of lines) {
+      try {
+        const o = JSON.parse(line) as { t?: number; ids?: unknown };
+        if (typeof o.t === "number" && o.t >= sinceMs && Array.isArray(o.ids)) {
+          for (const id of o.ids) if (typeof id === "string") out.add(id);
+        }
+      } catch { /* ligne corrompue: ignorée */ }
+    }
+    return [...out];
+  } catch {
+    return [];
   }
 }
 

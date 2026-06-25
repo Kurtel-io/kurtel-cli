@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { createHash } from "node:crypto";
-import { cacheDir, repoFullName, memoryEnabled } from "./store.js";
+import { cacheDir, repoFullName, memoryEnabled, readRecentInjectedIds } from "./store.js";
 import { postLearnEvent } from "./api.js";
 
 // ── Apprentissage local: chaque commit du dev est un signal d'acceptation ─────
@@ -213,6 +213,16 @@ export async function learnFromCommit(root: string): Promise<void> {
   try {
     const commit = collectCommit(root, sha);
     if (!commit) { saveLastLearnedSha(root, sha); return; } // gardé: pas la peine de réessayer
+
+    // Ids des skills injectés DEPUIS le commit parent = les règles que l'agent avait
+    // sous les yeux en produisant ce commit. Si le commit en viole une, c'est le
+    // signal négatif le plus fort (cf. recordViolation backend).
+    const parentMs = (() => {
+      try { return parseInt(git(root, ["show", "-s", "--format=%ct", `${sha}^`]).trim(), 10) * 1000; }
+      catch { return 0; } // commit initial (pas de parent) → toute la fenêtre disponible
+    })();
+    const injectedIds = readRecentInjectedIds(root, Number.isFinite(parentMs) ? parentMs : 0);
+
     try {
       await postLearnEvent(repoFullName(root), {
         source: "commit",
@@ -221,6 +231,7 @@ export async function learnFromCommit(root: string): Promise<void> {
         message: commit.message,
         diff: commit.diff,
         rules: commit.rules,
+        injected_ids: injectedIds.length ? injectedIds : undefined,
       });
       saveLastLearnedSha(root, sha);
     } catch {

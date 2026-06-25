@@ -34,8 +34,15 @@ function fitLines(parts: string[], budget: number): string {
 const STOPWORDS = new Set([
   "the", "a", "an", "to", "for", "of", "in", "on", "and", "or", "with", "add",
   "create", "make", "fix", "update", "change", "new", "page", "file", "please",
+  "can", "could", "would", "should", "that", "this", "these", "those", "your", "our",
   "le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "pour", "dans",
   "ajoute", "ajouter", "crée", "creer", "modifie", "modifier", "corrige", "il", "faut",
+  // mots-outils FR fréquents qui survivaient à la tokenisation (≥3 lettres, non accentués)
+  // et créaient de faux hits lexicaux (ex: "qui" ⊂ "required").
+  "qui", "que", "quoi", "dont", "nos", "vos", "mes", "tes", "ses", "son", "sur",
+  "par", "ces", "cet", "cette", "ce", "se", "sa", "ne", "pas", "plus", "peux",
+  "peut", "nous", "vous", "est", "est-ce", "comme", "mais", "donc", "car", "leur",
+  "leurs", "tout", "tous", "avec", "sans", "ton", "tes", "ver", "via",
 ]);
 
 export function tokenize(text: string): string[] {
@@ -44,6 +51,18 @@ export function tokenize(text: string): string[] {
       .split(/[^a-z0-9_]+/)
       .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
   )];
+}
+
+// Match d'un token de prompt contre un trigger. L'égalité compte toujours; le
+// containment de sous-chaîne n'est autorisé que si LA PLUS COURTE des deux fait
+// ≥ 4 chars — sinon un token court (ex: "qui") s'incruste dans un mot plus long
+// ("re-QUI-red") et vole un hit lexical de domaine. Tue toute la classe des
+// faux positifs sur tokens de 3 lettres (cf. diagnostic 2026-06-24).
+function triggerMatches(token: string, trigger: string): boolean {
+  if (token === trigger) return true;
+  const shorter = token.length <= trigger.length ? token : trigger;
+  if (shorter.length < 4) return false;
+  return trigger.includes(token) || token.includes(trigger);
 }
 
 // ── Contexte sémantique (optionnel): vecteur de requête + vecteurs modules ──
@@ -61,6 +80,16 @@ const SEM_WEIGHT_ZONE = 8;
 const SEM_WEIGHT_ROUTE = 4;
 const SEM_WEIGHT_PATTERN = 10; // un fort match sémantique vaut ~1 hit de trigger lexical
 
+// Porte de pertinence PROPRE aux conventions (≠ zones/routes, ancrées structurellement).
+// Les word-vectors moyennés ont une ligne de base de cosinus élevée et dépendante du
+// prompt: SEM_FLOOR=0.30 est SOUS la médiane de bruit → presque chaque convention le
+// franchit (diagnostic 2026-06-24). Une convention sémantique-SEULE (sans ancre lexicale
+// ni de zone) ne s'affiche que si son cosinus est à la fois absolument fort ET au-dessus
+// de la médiane des cosinus du prompt avec une marge — c.-à-d. un vrai rescue paraphrase
+// (rare ET fort, cf. billing→stripe), pas un effleurement dans la bande de bruit.
+const SEM_PATTERN_GATE = 0.50;  // plancher absolu pour une convention sémantique-seule
+const SEM_REL_MARGIN = 0.10;    // …et au-dessus de la médiane du prompt de cette marge
+
 function semScore(sem: SemanticContext | undefined, id: string, weight: number): number {
   if (!sem?.q || !sem.mvec) return 0;
   const v = sem.mvec.get(id);
@@ -69,19 +98,10 @@ function semScore(sem: SemanticContext | undefined, id: string, weight: number):
   return cs > SEM_FLOOR ? (cs - SEM_FLOOR) * weight : 0;
 }
 
-// Score sémantique d'un PATTERN: cosinus entre le prompt (FR) et le vecteur des
-// triggers du skill (EN), via la table alignée. C'est ce qui surface une convention
-// pertinente quand le vocabulaire diffère (paraphrase, FR↔EN) — sans recouvrement
-// lexical de triggers. Le vecteur du skill est calculé à la volée (peu de patterns).
-function semPatternScore(sem: SemanticContext | undefined, p: DarwinPattern): number {
-  if (!sem?.q) return 0;
-  const toks = p.triggers.length ? p.triggers : tokenize(p.rule);
-  if (!toks.length) return 0;
-  const v = embedTokens(toks);
-  if (!v) return 0;
-  const cs = cosine(sem.q, v);
-  return cs > SEM_FLOOR ? (cs - SEM_FLOOR) * SEM_WEIGHT_PATTERN : 0;
-}
+// Le score sémantique d'un PATTERN (cosinus prompt FR ↔ triggers EN, table alignée)
+// est désormais calculé inline dans `selectPatterns` — le cosinus y sert deux fois
+// (scoring ET porte de pertinence relative à la médiane du prompt), donc on le calcule
+// une seule fois par pattern au lieu de via un helper appelé en boucle.
 
 // ── Résolution spatiale: quelles zones du repo l'intention touche-t-elle ? ──
 
@@ -124,24 +144,45 @@ export function selectPatterns(
   max = MAX_PATTERNS,
   sem?: SemanticContext
 ): SelectedPattern[] {
+  // Cosinus prompt↔triggers par pattern, calculé une fois. Sert au scoring ET à la
+  // porte de pertinence (gate relatif à la médiane du prompt). Vide si pas de table.
+  const cosOf = new Map<DarwinPattern, number>();
+  if (sem?.q) {
+    for (const p of patterns) {
+      const toks = p.triggers.length ? p.triggers : tokenize(p.rule);
+      const v = toks.length ? embedTokens(toks) : null;
+      if (v) cosOf.set(p, cosine(sem.q, v));
+    }
+  }
+  // Médiane des cosinus du prompt = sa ligne de base de bruit. La porte sémantique
+  // exige de la dépasser (gate relatif), en plus du plancher absolu.
+  const cosVals = [...cosOf.values()].sort((a, b) => a - b);
+  const median = cosVals.length ? cosVals[Math.floor(cosVals.length / 2)] : 0;
+  const semGate = Math.max(SEM_PATTERN_GATE, median + SEM_REL_MARGIN);
+
   const out: SelectedPattern[] = [];
   for (const p of patterns) {
     if (p.score < 0.3 && !p.pinned) continue; // les mourants ne parlent plus
     let s = 0;
-    if (p.pinned) s += 10; // socle: toujours présent
+    let anchored = false; // ancre RÉELLE: trigger lexical borné, hit de zone, ou rescue sémantique fort
+    if (p.pinned) s += 10; // socle: toujours présent (override humain → bypasse la porte)
     for (const trig of p.triggers) {
-      const tl = trig.toLowerCase();
-      if (promptTokens.some((t) => t === tl || tl.includes(t) || t.includes(tl))) s += 4;
+      if (promptTokens.some((t) => triggerMatches(t, trig.toLowerCase()))) { s += 4; anchored = true; }
     }
     for (const z of p.zones) {
-      if (zones.some((zone) => zone.startsWith(z) || z.startsWith(zone))) s += 3;
+      if (zones.some((zone) => zone.startsWith(z) || z.startsWith(zone))) { s += 3; anchored = true; }
     }
     // Pont sémantique: surface un skill pertinent même SANS recouvrement lexical de
     // triggers (paraphrase, FR↔EN). Critique quand la mémoire est la source primaire
     // (remplace un AGENTS.md): un raté de routage = la convention n'atteint pas l'agent.
-    s += semPatternScore(sem, p);
+    const cs = cosOf.get(p) ?? 0;
+    if (cs > SEM_FLOOR) s += (cs - SEM_FLOOR) * SEM_WEIGHT_PATTERN;
+    if (cs >= semGate) anchored = true; // rescue paraphrase: rare ET fort, au-dessus du bruit
     if (p.zones.length === 0 && s > 0) s += 1; // global + déjà pertinent
-    if (s > 0) out.push({ pattern: p, score: s * (0.5 + p.score) });
+    // Porte de pertinence: une convention ne s'affiche qu'avec une ancre réelle. Un
+    // effleurement sémantique dans la bande de bruit (0.30–gate) ne suffit PAS — c'est
+    // ce qui injectait 8 conventions hors-sujet à 100%. Pinned bypasse toujours.
+    if ((p.pinned || anchored) && s > 0) out.push({ pattern: p, score: s * (0.5 + p.score) });
   }
   return out.sort((a, b) => b.score - a.score).slice(0, max);
 }

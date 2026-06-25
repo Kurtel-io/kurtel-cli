@@ -62,6 +62,9 @@ export interface LearnPayload {
   message?: string;
   diff?: string;
   rules?: string[];
+  // Ids des skills injectés à l'agent depuis le commit parent → signal négatif
+  // "injected-then-violated" si le commit en viole un (cf. recordViolation backend).
+  injected_ids?: string[];
 }
 export function postLearnEvent(
   repo: string,
