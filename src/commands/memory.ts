@@ -4,6 +4,8 @@ import {
   repoRoot,
   loadIndex,
   loadMemoryCache,
+  headCommit,
+  indexGeneratedAt,
   memoryEnabled,
   setMemoryEnabled,
   injectionLogPath,
@@ -187,7 +189,7 @@ export async function memoryCommand(
       if (opts.json) {
         process.stdout.write(JSON.stringify({
           enabled,
-          index: index ? { files: index.files_indexed, routes: index.routes.length, commit: index.commit, generated_at: index.generated_at } : null,
+          index: index ? { files: index.files_indexed, routes: index.routes.length, commit: headCommit(root), generated_at: indexGeneratedAt(root) } : null,
           patterns: cache.patterns.length,
           synced_at: cache.patterns_synced_at,
           pending_telemetry: cache.pending_telemetry.length,
@@ -198,7 +200,7 @@ export async function memoryCommand(
       console.log("");
       console.log(`${c.gray("memory")}    ${enabled ? c.indigo("● active") : c.yellow("○ disabled")}`);
       if (index) {
-        console.log(`${c.gray("index")}     ${c.white(`${index.files_indexed} files · ${index.routes.length} routes`)} ${c.dim(`(${ago(index.generated_at)}, commit ${index.commit.slice(0, 8)})`)}`);
+        console.log(`${c.gray("index")}     ${c.white(`${index.files_indexed} files · ${index.routes.length} routes`)} ${c.dim(`(${ago(indexGeneratedAt(root))}, commit ${headCommit(root).slice(0, 8)})`)}`);
       } else {
         console.log(`${c.gray("index")}     ${c.dim("none — run `kurtel onboard`")}`);
       }

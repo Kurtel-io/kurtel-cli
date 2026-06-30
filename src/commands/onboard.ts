@@ -38,7 +38,7 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
     }
   }
 
-  const report = renderReport(index);
+  const report = renderReport(index, root);
   const rp = reportPath(root);
   const dir = join(root, ".kurtel");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });

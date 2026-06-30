@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { loadMemoryCache, saveMemoryCache, repoFullName, dedupePatterns } from "./store.js";
 import { pullPatterns, pushTelemetry, pushIndex } from "./api.js";
-import { loadIndex } from "./store.js";
+import { loadIndex, headCommit } from "./store.js";
 
 // ── Sync ──
 // Règle d'or: aucun appel réseau sur le chemin critique d'un prompt — les hooks lisent le cache, le sync tourne détaché.
@@ -61,7 +61,7 @@ export async function syncIndexUp(root: string): Promise<boolean> {
   const index = loadIndex(root);
   if (!index) return false;
   try {
-    await pushIndex(index.repo, index);
+    await pushIndex(index.repo, index, headCommit(root));
     return true;
   } catch {
     return false;

@@ -1,8 +1,7 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, extname, dirname, sep } from "node:path";
-import { execFileSync } from "node:child_process";
 import type { CodebaseIndex, ModuleNode, RouteEntry } from "./store.js";
-import { repoFullName, currentBranch } from "./store.js";
+import { repoFullName, currentBranch, headCommit } from "./store.js";
 import { extractFileAst, nextRouteFor } from "./ast.js";
 
 // ── Indexeur structurel: heuristiques regex local/déterministe (fallback de l'AST) ──
@@ -354,18 +353,11 @@ export async function buildIndex(root: string, onProgress?: (n: number) => void)
   const routes = [...files.values()].flatMap((f) => f.routes)
     .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
 
-  let commit = "unknown";
-  try {
-    commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).toString().trim();
-  } catch { /* pas un repo git */ }
-
   return {
     version: 1,
     parser: { engine: regexFallbacks === files.size ? "regex" : "tree-sitter", regex_fallbacks: regexFallbacks },
     repo: repoFullName(root),
     branch: currentBranch(root),
-    commit,
-    generated_at: new Date().toISOString(),
     files_indexed: files.size,
     routes,
     modules,
@@ -376,11 +368,12 @@ export async function buildIndex(root: string, onProgress?: (n: number) => void)
 
 // ── Rapport d'audit ─────────────────────────────────────────────────────────
 
-export function renderReport(index: CodebaseIndex): string {
+export function renderReport(index: CodebaseIndex, root: string): string {
+  // commit + date calculés en live (plus persistés dans l'index pour éviter le churn).
   const lines: string[] = [];
   lines.push(`# Kurtel — Architecture Report`);
   lines.push(``);
-  lines.push(`Repo **${index.repo}** · ${index.files_indexed} files indexed · commit \`${index.commit.slice(0, 8)}\` · ${index.generated_at}`);
+  lines.push(`Repo **${index.repo}** · ${index.files_indexed} files indexed · commit \`${headCommit(root).slice(0, 8)}\` · ${new Date().toISOString()}`);
   lines.push(``);
 
   lines.push(`## Domains`);

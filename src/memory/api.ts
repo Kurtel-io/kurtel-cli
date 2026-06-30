@@ -36,10 +36,13 @@ export function pullPatterns(repo: string, since?: string | null): Promise<{
 }
 
 /** Push de la mémoire de codebase (digest, jamais le code source) — par branche. */
-export function pushIndex(repo: string, index: CodebaseIndex): Promise<{ ok: boolean }> {
+export function pushIndex(repo: string, index: CodebaseIndex, commit: string): Promise<{ ok: boolean }> {
   const branch = index.branch || "main";
+  // `commit` n'est plus dans l'index (évite la churn git); on l'attache en live au push
+  // pour garder la colonne d'observabilité `repo_memory.commit` à jour.
   const digest = {
     ...index,
+    commit,
     modules: index.modules.map((m) => ({
       ...m,
       exports: m.exports.slice(0, 10),

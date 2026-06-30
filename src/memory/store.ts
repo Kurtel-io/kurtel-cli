@@ -70,9 +70,11 @@ export interface CodebaseIndex {
   /** Moteur d'extraction utilisé + nb de fichiers retombés en regex. */
   parser?: { engine: "tree-sitter" | "regex"; regex_fallbacks: number };
   repo: string;            // owner/name si détectable, sinon basename
-  branch: string;          // branche git au moment de l'index (défaut "main")
-  commit: string;          // HEAD au moment de l'index
-  generated_at: string;
+  branch: string;          // branche git de l'index (défaut "main") — partitionne le graphe
+  // PAS de `commit`/`generated_at` ici: ce fichier est versionné, ces champs changeaient à
+  // chaque commit/reindex (churn git "juste un hash + une date") et cassaient le déterminisme
+  // (deux machines, même code → fichiers différents). Le commit HEAD se calcule en live
+  // (headCommit), l'âge de l'index = mtime du fichier (indexGeneratedAt). Aucun n'est load-bearing.
   files_indexed: number;
   routes: RouteEntry[];
   modules: ModuleNode[];
@@ -217,6 +219,25 @@ export function indexPath(root: string): string {
 
 export function reportPath(root: string): string {
   return join(root, ".kurtel", "REPORT.md");
+}
+
+/** HEAD court — calculé en live, jamais persisté (sinon churn). "unknown" hors repo git. */
+export function headCommit(root: string): string {
+  try {
+    const sha = git(["rev-parse", "HEAD"], root);
+    if (sha) return sha;
+  } catch { /* pas un repo git */ }
+  return "unknown";
+}
+
+/** Date de dernière (re)génération de l'index = mtime du fichier. null si absent.
+ *  Remplace l'ancien champ `generated_at` persisté (qui polluait le fichier versionné). */
+export function indexGeneratedAt(root: string): string | null {
+  try {
+    return statSync(indexPath(root)).mtime.toISOString();
+  } catch {
+    return null;
+  }
 }
 
 // ── Journal d'injection (dans le repo, gitignoré: ce que la mémoire a injecté) ──

@@ -9,6 +9,7 @@ import {
   queueTelemetry,
   appendInjectionLog,
   appendInjectedIds,
+  headCommit,
 } from "../memory/store.js";
 import { compileCapsule, compileZoneCapsule, findSimilarRoutes } from "../memory/capsule.js";
 import { resolveTarget, computeImpact } from "../memory/impact.js";
@@ -103,7 +104,7 @@ function onSessionStart(root: string, input: HookInput): void {
   if (!index && !cache.patterns.length) return;
 
   const bits: string[] = [];
-  if (index) bits.push(`codebase index: ${index.files_indexed} files, ${index.routes.length} routes (commit ${index.commit.slice(0, 8)})`);
+  if (index) bits.push(`codebase index: ${index.files_indexed} files, ${index.routes.length} routes (commit ${headCommit(root).slice(0, 8)})`);
   if (cache.patterns.length) bits.push(`${cache.patterns.length} team patterns loaded`);
   emitContext(
     root,
