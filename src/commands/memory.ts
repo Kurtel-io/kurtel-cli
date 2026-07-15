@@ -8,11 +8,15 @@ import {
   indexGeneratedAt,
   memoryEnabled,
   setMemoryEnabled,
+  memoryDisabledGlobally,
+  repoActivated,
+  activateRepo,
   injectionLogPath,
   readInjectionLog,
   clearInjectionLog,
 } from "../memory/store.js";
 import { syncNow } from "../memory/sync.js";
+import { setConfigValue } from "../lib/config.js";
 import { importVecFile, vectorsInfo } from "../memory/embed.js";
 import { compileCapsule } from "../memory/capsule.js";
 
@@ -28,7 +32,7 @@ function ago(iso: string | null): string {
 
 export async function memoryCommand(
   action?: string,
-  opts: { quiet?: boolean; json?: boolean; max?: string; out?: string } = {},
+  opts: { quiet?: boolean; json?: boolean; max?: string; out?: string; global?: boolean } = {},
   args: string[] = []
 ): Promise<void> {
   const root = repoRoot();
@@ -65,11 +69,26 @@ export async function memoryCommand(
       return;
     }
     case "on":
-      setMemoryEnabled(root, true);
+      if (opts.global) {
+        setConfigValue("memoryDisabled", false);
+        console.log(`${symbols.check} Global kill switch ${c.indigo("lifted")} — memory follows each repo's own on/off state again.`);
+        return;
+      }
+      // `on` vaut opt-in explicite: active aussi les repos jamais onboardés
+      // (état local hors repo — n'écrit rien dans le dossier).
+      activateRepo(root);
       console.log(`${symbols.check} Kurtel memory ${c.indigo("enabled")} for this repo.`);
+      if (memoryDisabledGlobally()) {
+        console.log(`${c.yellow(symbols.warn)} ${c.dim("Note: the global kill switch is on — lift it with")} ${c.indigo("kurtel memory on --global")}${c.dim(".")}`);
+      }
       return;
 
     case "off":
+      if (opts.global) {
+        setConfigValue("memoryDisabled", true);
+        console.log(`${symbols.check} Kurtel memory ${c.yellow("disabled everywhere")} ${c.dim("(all repos, this machine — re-enable with `kurtel memory on --global`)")}.`);
+        return;
+      }
       setMemoryEnabled(root, false);
       console.log(`${symbols.check} Kurtel memory ${c.yellow("disabled")} for this repo ${c.dim("(hooks stay installed, injection is skipped)")}.`);
       return;
@@ -142,7 +161,9 @@ export async function memoryCommand(
       const enabled = memoryEnabled(root);
 
       // Mêmes gardes que le hook: prompts trop courts ou slash-commands = silence.
-      const skipped = !enabled
+      const skipped = !repoActivated(root)
+        ? "repo is not activated (`kurtel onboard` or `kurtel memory on`)"
+        : !enabled
         ? "memory is disabled for this repo (`kurtel memory on`)"
         : prompt.length < 8
         ? "prompt is under 8 chars — the hook stays silent"
@@ -182,13 +203,17 @@ export async function memoryCommand(
 
     case undefined:
     case "status": {
-      const enabled = memoryEnabled(root);
+      const activated = repoActivated(root);
+      const globalOff = memoryDisabledGlobally();
+      const enabled = memoryEnabled(root) && activated;
       const index = loadIndex(root);
       const cache = loadMemoryCache(root);
 
       if (opts.json) {
         process.stdout.write(JSON.stringify({
           enabled,
+          activated,
+          global_off: globalOff,
           index: index ? { files: index.files_indexed, routes: index.routes.length, commit: headCommit(root), generated_at: indexGeneratedAt(root) } : null,
           patterns: cache.patterns.length,
           synced_at: cache.patterns_synced_at,
@@ -198,7 +223,14 @@ export async function memoryCommand(
       }
 
       console.log("");
-      console.log(`${c.gray("memory")}    ${enabled ? c.indigo("● active") : c.yellow("○ disabled")}`);
+      const state = !activated
+        ? `${c.yellow("○ not activated")} ${c.dim("— run `kurtel onboard` (or `kurtel memory on`) to opt this repo in")}`
+        : globalOff
+        ? `${c.yellow("○ disabled globally")} ${c.dim("(`kurtel memory on --global` to lift)")}`
+        : enabled
+        ? c.indigo("● active")
+        : c.yellow("○ disabled");
+      console.log(`${c.gray("memory")}    ${state}`);
       if (index) {
         console.log(`${c.gray("index")}     ${c.white(`${index.files_indexed} files · ${index.routes.length} routes`)} ${c.dim(`(${ago(indexGeneratedAt(root))}, commit ${headCommit(root).slice(0, 8)})`)}`);
       } else {

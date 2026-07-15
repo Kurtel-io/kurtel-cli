@@ -120,8 +120,9 @@ program
   .command("install")
   .description("Install a Kurtel integration (claude-code)")
   .argument("<target>", "Integration target: claude-code")
-  .action(async (target: string) => {
-    if (target === "claude-code") return installClaudeCodeCommand();
+  .option("--force", "Install even if this folder is not a git repository", false)
+  .action(async (target: string, opts) => {
+    if (target === "claude-code") return installClaudeCodeCommand(opts);
     console.log(`${c.red(symbols.cross)} Unknown target ${c.white(target)}. Try ${c.indigo("claude-code")}.`);
     process.exitCode = 1;
   });
@@ -159,6 +160,7 @@ program
   .argument("[args...]", "extra args (e.g. `preview \"<prompt>\"`, `log clear`, `vectors import <file.vec>`)")
   .option("--json", "Machine-readable output", false)
   .option("--quiet", "No spinner/log output (used by background sync)", false)
+  .option("--global", "Apply on/off to every repo on this machine (kill switch)", false)
   .option("--max <n>", "Max words to import (vectors import)")
   .option("--out <dir>", "Output dir for the built table (vectors import; default ~/.kurtel/vectors)")
   .action(async (action, args, opts) => memoryCommand(action, opts, args));

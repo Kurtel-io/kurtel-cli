@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { c, symbols } from "../ui/colors.js";
 import { loadConfig } from "../lib/config.js";
-import { repoRoot } from "../memory/store.js";
+import { repoRoot, isGitRepo } from "../memory/store.js";
 import { installCommitHook, uninstallCommitHook } from "../memory/githook.js";
 
 // ── install/uninstall claude-code: slash commands + hooks dans .claude/ ──
@@ -37,8 +38,8 @@ description: Toggle or inspect Kurtel memory (on / off / status / sync / pattern
 allowed-tools: Bash(kurtel memory:*)
 ---
 The user said: "$ARGUMENTS"
-- If it contains "off" or "disable" → run \`kurtel memory off\`
-- If it contains "on" or "enable" → run \`kurtel memory on\`
+- If it contains "off" or "disable" → run \`kurtel memory off\` (add \`--global\` if they say "global", "everywhere", "all repos" or "partout" — disables memory on the whole machine)
+- If it contains "on" or "enable" → run \`kurtel memory on\` (add \`--global\` if they say "global"/"everywhere"/"partout" — lifts the machine-wide kill switch)
 - If it contains "sync" → run \`kurtel memory sync\`
 - If it contains "pattern" → run \`kurtel memory patterns --json\` and present the patterns as a readable list (rule, confidence, zones, evidence count), sorted by confidence
 - If it contains "log" → the local injection journal (what memory actually injected, prompt by prompt). If it also contains "clear"/"reset" → run \`kurtel memory log clear\`. Otherwise run \`kurtel memory log\` and present the recent entries, then mention the full history lives in the gitignored file at \`<repo>/.kurtel/injection-log.md\`.
@@ -205,8 +206,25 @@ function readSettings(file: string): Settings {
 
 // ── Commandes ───────────────────────────────────────────────────────────────
 
-export async function installClaudeCodeCommand(): Promise<void> {
+export async function installClaudeCodeCommand(opts: { force?: boolean } = {}): Promise<void> {
   const root = repoRoot();
+
+  // Garde-fous d'emplacement. `repoRoot()` retombe sur le cwd hors d'un repo git:
+  // lancé depuis le home, on écrirait ~/.claude/settings.json — les hooks
+  // deviendraient GLOBAUX et Kurtel se chargerait dans tous les projets.
+  if (resolve(root) === resolve(homedir())) {
+    console.log(`${c.red(symbols.cross)} Refusing to install in your home directory — ${c.indigo("~/.claude/settings.json")} applies to ${c.white("every")} project on this machine.`);
+    console.log(`${c.dim("Run this from the root of the project where you want Kurtel, e.g.")} ${c.indigo("cd my-project && kurtel install claude-code")}${c.dim(".")}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!isGitRepo(root) && !opts.force) {
+    console.log(`${c.yellow(symbols.warn)} ${c.white(root)} ${c.dim("is not a git repository — this is usually a sign you're not in a project root.")}`);
+    console.log(`${c.dim("Run from your project's root, or pass")} ${c.indigo("--force")} ${c.dim("to install here anyway.")}`);
+    process.exitCode = 1;
+    return;
+  }
+
   const claudeDir = join(root, ".claude");
   const cmdDir = join(claudeDir, "commands", "kurtel");
   const settingsFile = join(claudeDir, "settings.json");
@@ -245,7 +263,7 @@ export async function installClaudeCodeCommand(): Promise<void> {
 
   console.log("");
   console.log(`${c.dim("Next: open Claude Code in this repo and run")} ${c.indigo("/kurtel:onboard")} ${c.dim("to index the codebase.")}`);
-  console.log(`${c.dim("Memory is")} ${c.indigo("on")} ${c.dim("by default — toggle with")} ${c.indigo("/kurtel:memory off")}${c.dim(".")}`);
+  console.log(`${c.dim("Memory is")} ${c.indigo("opt-in per repo")} ${c.dim("— it stays silent until you onboard. Toggle anytime with")} ${c.indigo("/kurtel:memory on|off")}${c.dim(".")}`);
   console.log("");
 }
 

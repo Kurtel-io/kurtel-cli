@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { c, symbols } from "../ui/colors.js";
 import { Spinner } from "../ui/spinner.js";
 import { buildIndex, renderReport } from "../memory/indexer.js";
-import { repoRoot, saveIndex, reportPath, loadMemoryCache, saveModuleVectors, repoFullName } from "../memory/store.js";
+import { repoRoot, saveIndex, reportPath, loadMemoryCache, saveModuleVectors, repoFullName, activateRepo, projectConfigPath } from "../memory/store.js";
 import { embeddingsAvailable, buildModuleVectors } from "../memory/embed.js";
 import { syncIndexUp, syncNow } from "../memory/sync.js";
 import { ensureWatcher } from "../memory/reindex.js";
@@ -21,6 +21,10 @@ export interface OnboardOptions {
 
 export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
   const root = repoRoot();
+
+  // Onboard = LE geste d'opt-in. Sans lui (ou `kurtel init` / `kurtel memory on`),
+  // hooks et watcher restent muets partout. Marqueur versionnable + flag local.
+  activateRepo(root);
 
   const spin = opts.json ? null : new Spinner("Indexing codebase (local, deterministic)…").start();
   const index = await buildIndex(root, (n) => {
@@ -43,6 +47,11 @@ export async function onboardCommand(opts: OnboardOptions = {}): Promise<void> {
   const dir = join(root, ".kurtel");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(rp, report, "utf8");
+
+  // Marqueur d'activation dans le repo (versionnable: un teammate qui clone est
+  // activé d'office). Ne jamais écraser un config.json existant (kurtel init).
+  const cfg = projectConfigPath(root);
+  if (!existsSync(cfg)) writeFileSync(cfg, JSON.stringify({ version: 1 }, null, 2) + "\n", "utf8");
 
   let uploaded = false;
   let patterns = 0;

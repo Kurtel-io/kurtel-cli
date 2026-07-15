@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { createHash } from "node:crypto";
-import { cacheDir, repoFullName, memoryEnabled, readRecentInjectedIds } from "./store.js";
+import { cacheDir, repoFullName, memoryEnabled, repoActivated, readRecentInjectedIds } from "./store.js";
 import { postLearnEvent } from "./api.js";
 
 // ── Apprentissage local: chaque commit du dev est un signal d'acceptation ─────
@@ -201,6 +201,9 @@ function collectCommit(root: string, sha: string): Commit | null {
 let inFlight = false;
 export async function learnFromCommit(root: string): Promise<void> {
   if (inFlight) return;
+  // Opt-in: un hook post-commit hérité d'une vieille install ne doit rien
+  // apprendre (ni pousser) depuis un repo jamais activé.
+  if (!repoActivated(root)) return;
   if (!memoryEnabled(root)) return;
   // Pendant un rebase/cherry-pick: ne pas apprendre (SHA réécrits = faux votes).
   // On NE marque pas le SHA courant → le tip final sera appris une fois l'opération finie.

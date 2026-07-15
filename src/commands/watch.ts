@@ -1,6 +1,6 @@
 import { watch as fsWatch, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { extname, dirname, join } from "node:path";
-import { repoRoot, repoFullName, currentBranch, memoryEnabled } from "../memory/store.js";
+import { repoRoot, repoFullName, currentBranch, memoryEnabled, repoActivated } from "../memory/store.js";
 import {
   reindexNow,
   contentFingerprint,
@@ -47,6 +47,14 @@ export async function watchCommand(action: string, opts: WatchOptions = {}): Pro
   }
 
   // action === "start" (défaut)
+  if (!repoActivated(root)) {
+    // Opt-in: pas de watcher (donc pas de .kurtel/, pas d'index, pas d'upload)
+    // tant que le repo n'a pas été activé explicitement.
+    if (!opts.daemon) {
+      console.log(`${c.yellow(symbols.warn)} Kurtel is not activated in this repo — run ${c.indigo("kurtel onboard")} first ${c.dim("(or `kurtel memory on` to activate without indexing).")}`);
+    }
+    return;
+  }
   await runDaemon(root, !!opts.daemon);
 }
 

@@ -4,12 +4,18 @@ import { c, symbols } from "../ui/colors.js";
 import { Spinner, sleep } from "../ui/spinner.js";
 import { getVersion } from "../lib/version.js";
 import { loadConfig } from "../lib/config.js";
+import { repoRoot, activateRepo } from "../memory/store.js";
 
 export async function initCommand(): Promise<void> {
-  const dir = join(process.cwd(), ".kurtel");
+  // Racine du repo, pas le cwd: c'est là que les hooks cherchent le marqueur
+  // d'activation (.kurtel/config.json) — un init dans un sous-dossier doit
+  // quand même activer le projet.
+  const root = repoRoot();
+  const dir = join(root, ".kurtel");
   const file = join(dir, "config.json");
 
   if (existsSync(file)) {
+    activateRepo(root); // le marqueur suffit déjà, mais aligne aussi l'état local
     console.log(`${c.yellow(symbols.warn)} ${c.dim(".kurtel/config.json already exists.")}`);
     return;
   }
@@ -26,6 +32,7 @@ export async function initCommand(): Promise<void> {
     learn: { shareTeamPatterns: true },
   };
   writeFileSync(file, JSON.stringify(template, null, 2) + "\n", "utf8");
+  activateRepo(root); // init = opt-in explicite: les hooks Claude Code s'activent ici
 
   spin.succeed("Created .kurtel/config.json");
   console.log(

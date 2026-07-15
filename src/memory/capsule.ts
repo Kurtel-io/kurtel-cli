@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CodebaseIndex, DarwinPattern, RouteEntry } from "./store.js";
 import { findSimilarRoutes } from "./indexer.js";
-import { embeddingsAvailable, embedTokens, cosine } from "./embed.js";
+import { embeddingsAvailable, embedTokens, cosine, foldAccents } from "./embed.js";
 import { loadModuleVectors, dedupePatterns } from "./store.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,7 +31,10 @@ function fitLines(parts: string[], budget: number): string {
   while (out.length && out[out.length - 1].trimEnd().endsWith(":")) out.pop();
   return out.join("\n");
 }
-const STOPWORDS = new Set([
+// Entrées pliées (foldAccents) à la construction: la tokenisation plie les accents
+// AVANT le split, donc "créé"/"crée" arrivent en "cree" — les stopwords doivent
+// vivre dans le même espace, sinon les entrées accentuées sont inatteignables.
+const STOPWORDS_RAW = [
   "the", "a", "an", "to", "for", "of", "in", "on", "and", "or", "with", "add",
   "create", "make", "fix", "update", "change", "new", "page", "file", "please",
   "can", "could", "would", "should", "that", "this", "these", "those", "your", "our",
@@ -43,11 +46,17 @@ const STOPWORDS = new Set([
   "par", "ces", "cet", "cette", "ce", "se", "sa", "ne", "pas", "plus", "peux",
   "peut", "nous", "vous", "est", "est-ce", "comme", "mais", "donc", "car", "leur",
   "leurs", "tout", "tous", "avec", "sans", "ton", "tes", "ver", "via",
-]);
+  // mots-outils accentués, atteignables depuis que la tokenisation plie les accents
+  "créé", "créée", "déjà", "être", "où", "après", "très", "même", "général",
+];
+const STOPWORDS = new Set(STOPWORDS_RAW.map((w) => foldAccents(w)));
 
 export function tokenize(text: string): string[] {
+  // foldAccents AVANT le split: sans ça, é/è/à sont des séparateurs et la plupart
+  // des mots pleins du français sont déchiquetés ("gère" → ["g","re"] → rien) —
+  // un prompt FR perdait son signal lexical ET sémantique avant tout routage.
   return [...new Set(
-    text.toLowerCase()
+    foldAccents(text.toLowerCase())
       .split(/[^a-z0-9_]+/)
       .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
   )];
@@ -89,6 +98,13 @@ const SEM_WEIGHT_PATTERN = 10; // un fort match sémantique vaut ~1 hit de trigg
 // (rare ET fort, cf. billing→stripe), pas un effleurement dans la bande de bruit.
 const SEM_PATTERN_GATE = 0.50;  // plancher absolu pour une convention sémantique-seule
 const SEM_REL_MARGIN = 0.10;    // …et au-dessus de la médiane du prompt de cette marge
+// La marge relative n'a de sens que si la médiane est une vraie ligne de base de bruit,
+// c.-à-d. calculée sur assez de patterns. En dessous, elle s'auto-neutralise: avec 1 seul
+// pattern la médiane EST son propre cosinus → gate = cos+0.10, mathématiquement
+// infranchissable; avec 2, le meilleur des deux est bloqué pareil. Or c'est exactement le
+// cold-start (repo qui vient d'apprendre ses premières règles) où le rescue paraphrase
+// doit marcher. Sous ce seuil, seul le plancher absolu s'applique.
+const SEM_REL_MIN_N = 5;
 
 function semScore(sem: SemanticContext | undefined, id: string, weight: number): number {
   if (!sem?.q || !sem.mvec) return 0;
@@ -158,7 +174,9 @@ export function selectPatterns(
   // exige de la dépasser (gate relatif), en plus du plancher absolu.
   const cosVals = [...cosOf.values()].sort((a, b) => a - b);
   const median = cosVals.length ? cosVals[Math.floor(cosVals.length / 2)] : 0;
-  const semGate = Math.max(SEM_PATTERN_GATE, median + SEM_REL_MARGIN);
+  const semGate = cosVals.length >= SEM_REL_MIN_N
+    ? Math.max(SEM_PATTERN_GATE, median + SEM_REL_MARGIN)
+    : SEM_PATTERN_GATE; // petit cache: la médiane n'est pas une ligne de base, cf. SEM_REL_MIN_N
 
   const out: SelectedPattern[] = [];
   for (const p of patterns) {
@@ -167,7 +185,9 @@ export function selectPatterns(
     let anchored = false; // ancre RÉELLE: trigger lexical borné, hit de zone, ou rescue sémantique fort
     if (p.pinned) s += 10; // socle: toujours présent (override humain → bypasse la porte)
     for (const trig of p.triggers) {
-      if (promptTokens.some((t) => triggerMatches(t, trig.toLowerCase()))) { s += 4; anchored = true; }
+      // plié comme les tokens du prompt: un trigger distillé peut porter des accents
+      const tl = foldAccents(trig.toLowerCase());
+      if (promptTokens.some((t) => triggerMatches(t, tl))) { s += 4; anchored = true; }
     }
     for (const z of p.zones) {
       if (zones.some((zone) => zone.startsWith(z) || z.startsWith(zone))) { s += 3; anchored = true; }
@@ -339,12 +359,13 @@ export function compileCapsule(
     for (const r of reuse) parts.push(`- ${r.sig ?? `${r.name}(…)`} → ${r.file}:${r.line}`);
   }
 
+  // Header exact: les règles viennent des PR mergées, des commits locaux ET des ajouts
+  // explicites — pas seulement des PR. Et PAS de "(confidence N%)": ce chiffre était la
+  // FITNESS (une règle jamais confirmée au prior neutre affichait "confidence 50%") —
+  // un label inexact dans l'encart même qui porte l'invariant de confiance.
   if (restSel.length) {
-    parts.push(`Team conventions learned from merged PRs (follow them):`);
-    for (const { pattern } of restSel) {
-      const conf = Math.round(pattern.score * 100);
-      parts.push(`- ${pattern.rule} (confidence ${conf}%)`);
-    }
+    parts.push(`Team conventions for this repo (follow them):`);
+    for (const { pattern } of restSel) parts.push(`- ${pattern.rule}`);
   }
 
   if (gods.length) {

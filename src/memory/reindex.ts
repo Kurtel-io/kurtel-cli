@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, rmSync, statSync, mkdirSync } 
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { buildIndex, listCodeFiles } from "./indexer.js";
-import { cacheDir, loadIndex, saveIndex, memoryEnabled } from "./store.js";
+import { cacheDir, loadIndex, saveIndex, memoryEnabled, repoActivated } from "./store.js";
 import { syncIndexUp } from "./sync.js";
 
 // ── Réindexation continue ────────────────────────────────────────────────────
@@ -76,6 +76,9 @@ function releaseLock(root: string): void {
  * mémoire est off, ou en cas d'erreur. Jamais bloquant pour l'appelant ailleurs.
  */
 export async function reindexNow(root: string, opts: { push?: boolean } = {}): Promise<boolean> {
+  // Opt-in strict: un daemon hérité d'une ancienne version peut encore tourner
+  // sur un dossier jamais activé — ce garde l'empêche d'écrire/pusher quoi que ce soit.
+  if (!repoActivated(root)) return false;
   if (!memoryEnabled(root)) return false;
   if (!acquireLock(root)) return false;
   try {
@@ -110,6 +113,7 @@ export function watcherRunning(root: string): number | null {
 /** Démarre le watcher détaché s'il ne tourne pas déjà — silencieux, fire & forget. */
 export function ensureWatcher(root: string): void {
   try {
+    if (!repoActivated(root)) return; // opt-in: pas de daemon sur un dossier non activé
     if (!memoryEnabled(root)) return;
     if (watcherRunning(root)) return;
     const child = spawn(process.execPath, [process.argv[1], "watch", "start", "--daemon"], {

@@ -1,8 +1,9 @@
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, renameSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { loadConfig } from "../lib/config.js";
 
 /**
  * Lance git directement (pas via cmd.exe) et SANS fenêtre console.
@@ -114,6 +115,16 @@ export function repoRoot(cwd = process.cwd()): string {
     return git(["rev-parse", "--show-toplevel"], cwd);
   } catch {
     return cwd;
+  }
+}
+
+/** True si `cwd` est dans un dépôt git (repoRoot n'a PAS fait le fallback cwd). */
+export function isGitRepo(cwd = process.cwd()): boolean {
+  try {
+    git(["rev-parse", "--is-inside-work-tree"], cwd);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -445,6 +456,9 @@ export function saveIndex(root: string, index: CodebaseIndex): void {
 
 interface MemoryState {
   enabled: boolean;
+  /** Opt-in EXPLICITE (onboard / init / `memory on`). Sans ça, hooks et watcher
+   *  restent muets: Kurtel ne crée ni n'indexe rien tout seul dans un dossier. */
+  activated?: boolean;
   /** session_id -> zones (top-level dirs) déjà couvertes par une capsule. */
   session_zones: Record<string, string[]>;
 }
@@ -469,11 +483,51 @@ export function saveMemoryState(root: string, state: MemoryState): void {
 }
 
 export function memoryEnabled(root: string): boolean {
+  if (memoryDisabledGlobally()) return false;
   return loadMemoryState(root).enabled;
 }
 
 export function setMemoryEnabled(root: string, enabled: boolean): void {
   const s = loadMemoryState(root);
   s.enabled = enabled;
+  saveMemoryState(root, s);
+}
+
+/** Kill switch global (`kurtel memory off --global`) — prime sur l'état par repo. */
+export function memoryDisabledGlobally(): boolean {
+  return loadConfig().memoryDisabled === true;
+}
+
+// ── Activation par repo (opt-in) ──
+// Deux marqueurs, l'un OU l'autre suffit:
+//   1. <repo>/.kurtel/config.json — écrit par `kurtel init` / `kurtel onboard`.
+//      Versionnable: un teammate qui clone un repo déjà activé l'a d'office.
+//   2. state.activated (hors repo, ~/.kurtel/cache/) — écrit par `kurtel memory on`.
+//      Couvre les dossiers où on ne veut rien écrire (ou non-git).
+// index.json ne compte PAS: les anciennes versions le créaient toutes seules
+// via le watcher — c'est précisément la pollution qu'on corrige.
+
+export function projectConfigPath(root: string): string {
+  return join(root, ".kurtel", "config.json");
+}
+
+export function repoActivated(root: string): boolean {
+  // Collision home: ~/.kurtel/config.json est le config GLOBAL du CLI, pas un
+  // marqueur projet — sans ce garde, une session lancée dans le home passerait
+  // pour "activée" et le watcher indexerait tout le répertoire personnel.
+  const isHome = resolve(root) === resolve(homedir());
+  if (!isHome && existsSync(projectConfigPath(root))) return true;
+  // Marqueur legacy (zéro migration): REPORT.md n'est écrit QUE par `kurtel
+  // onboard` — jamais par le watcher. Sa présence prouve un onboard explicite
+  // fait avant l'ère opt-in; un dossier pollué par l'auto-index n'en a pas.
+  if (!isHome && existsSync(reportPath(root))) return true;
+  return loadMemoryState(root).activated === true;
+}
+
+/** Marque le repo comme explicitement activé (état local, ne touche pas au repo). */
+export function activateRepo(root: string): void {
+  const s = loadMemoryState(root);
+  s.activated = true;
+  s.enabled = true;
   saveMemoryState(root, s);
 }

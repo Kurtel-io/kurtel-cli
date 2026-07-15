@@ -4,6 +4,7 @@ import {
   loadIndex,
   loadMemoryCache,
   memoryEnabled,
+  repoActivated,
   loadMemoryState,
   saveMemoryState,
   queueTelemetry,
@@ -28,13 +29,14 @@ interface HookInput {
 }
 
 function readStdin(): Promise<string> {
+  const dbg = (m: string) => { if (process.env.KURTEL_DEBUG) console.error(`[kurtel stdin] ${m}`); };
   return new Promise((resolve) => {
     let data = "";
     process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (c) => (data += c));
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", () => resolve(data));
-    setTimeout(() => resolve(data), 2000).unref?.(); // garde-fou si rien n'arrive sur stdin
+    process.stdin.on("data", (c) => { dbg(`data +${c.length}`); data += c; });
+    process.stdin.on("end", () => { dbg(`end (${data.length})`); resolve(data); });
+    process.stdin.on("error", (e) => { dbg(`error ${e} (${data.length})`); resolve(data); });
+    setTimeout(() => { dbg(`timeout (${data.length})`); resolve(data); }, 2000).unref?.(); // garde-fou si rien n'arrive sur stdin
   });
 }
 
@@ -76,6 +78,9 @@ export async function hookCommand(event: string): Promise<void> {
     try { input = raw ? JSON.parse(raw) : {}; } catch { /* stdin non-JSON */ }
 
     const root = repoRoot(input.cwd ?? process.cwd());
+    // Opt-in strict: jamais activé ici (pas d'onboard/init/`memory on`) → silence
+    // total, ZÉRO écriture. Kurtel ne doit rien créer dans un dossier non consenti.
+    if (!repoActivated(root)) return;
     if (!memoryEnabled(root)) return; // off = silence total, coût zéro
 
     switch (event) {
@@ -85,8 +90,9 @@ export async function hookCommand(event: string): Promise<void> {
       case "session-end":    return onSessionEnd(root, input);
       default: return;
     }
-  } catch {
+  } catch (e) {
     /* jamais d'erreur visible: un hook cassé est pire que pas de hook */
+    if (process.env.KURTEL_DEBUG) console.error("[kurtel hook]", e);
   } finally {
     process.exitCode = 0;
   }
@@ -117,12 +123,14 @@ function onSessionStart(root: string, input: HookInput): void {
 
 function onPrompt(root: string, input: HookInput): void {
   const prompt = input.prompt ?? "";
-  if (prompt.length < 8 || prompt.startsWith("/")) return; // slash commands & micro-prompts: silence
+  const dbg = (m: string) => { if (process.env.KURTEL_DEBUG) console.error(`[kurtel hook] ${m}`); };
+  if (prompt.length < 8 || prompt.startsWith("/")) { dbg(`skip: prompt too short or slash (${JSON.stringify(prompt)})`); return; }
 
   const index = loadIndex(root);
   const cache = loadMemoryCache(root);
+  dbg(`root=${root} index=${!!index} patterns=${cache.patterns.length}`);
   const capsule = compileCapsule(index, cache.patterns, prompt, root);
-  if (!capsule) return;
+  if (!capsule) { dbg("skip: compileCapsule returned null"); return; }
 
   emitContext(root, "UserPromptSubmit", capsule.text, { prompt });
 

@@ -11,6 +11,16 @@ import { userVectorsDir, vectorsReadPaths, vectorsPathsIn } from "./store.js";
 const MAGIC = "KVEC";
 const HEADER = 12;
 
+/** Décompose les accents et les retire ("gère" → "gere", "récurrents" → "recurrents").
+ *  Sans ça, tout le pipeline texte splitte sur [^a-z0-9] et les caractères accentués
+ *  agissent comme des séparateurs: la plupart des mots pleins du FRANÇAIS étaient
+ *  déchiquetés avant d'atteindre les vecteurs ("gère" → ["g","re"] → rien) — le pont
+ *  FR↔EN ratait précisément la langue qu'il doit servir. Appliqué partout: tokenisation,
+ *  stopwords, triggers, et lookup de la table de vecteurs (les deux côtés pliés). */
+export function foldAccents(s: string): string {
+  return s.normalize("NFD").replace(/\p{M}+/gu, "");
+}
+
 interface Table { dim: number; words: Map<string, number>; data: Int8Array }
 
 let table: Table | null = null;
@@ -34,7 +44,13 @@ function getTable(): Table | null {
     const words = new Map<string, number>();
     for (let i = 0; i < count && i < lines.length; i++) {
       const w = lines[i];
-      if (w) words.set(w, i);
+      if (!w) continue;
+      // Clé PLIÉE (sans accents): les requêtes arrivent pliées (tokenize/rawWords), la
+      // table doit l'être aussi sinon "gere" ne trouve jamais "gère". Collision possible
+      // ("côte"/"cote" → même clé): le .vec est trié par fréquence → le premier (le plus
+      // fréquent) gagne, le second est inatteignable — acceptable pour des word-vectors.
+      const k = foldAccents(w);
+      if (!words.has(k)) words.set(k, i);
     }
     table = { dim, words, data };
     return table;
@@ -73,7 +89,7 @@ export function splitIdentifier(name: string): string[] {
 }
 
 function rawWords(text: string): string[] {
-  return text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 2);
+  return foldAccents(text.toLowerCase()).split(/[^a-z0-9]+/).filter((w) => w.length >= 2);
 }
 
 // ── Embedding: moyenne des vecteurs des mots trouvés, L2-normalisée ─────────
@@ -85,7 +101,8 @@ export function embedTokens(words: string[]): Float32Array | null {
   const acc = new Float32Array(t.dim);
   let hits = 0;
   for (const w of words) {
-    const row = t.words.get(w);
+    // Lookup plié: les triggers/identifiants passés ici peuvent encore porter des accents.
+    const row = t.words.get(foldAccents(w));
     if (row === undefined) continue;
     const base = row * t.dim;
     for (let i = 0; i < t.dim; i++) acc[i] += t.data[base + i] / 127; // déquantif
