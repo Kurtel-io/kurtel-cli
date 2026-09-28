@@ -1,0 +1,72 @@
+{
+  "results": [
+    {
+      "name": "symbol",
+      "result": {
+        "lines": [
+          "Relevant code definitions (read these locations to verify behavior):",
+          "- chargeCustomer → src/billing.ts:1",
+          "- caller invoice → src/api.ts:2"
+        ],
+        "files": [
+          "src/billing.ts"
+        ]
+      }
+    },
+    {
+      "name": "cited-file",
+      "result": {
+        "lines": [
+          "Explicitly referenced modules and direct dependencies (indexed static imports):",
+          "- src/billing.ts",
+          "  imported by: src/api.ts"
+        ],
+        "files": [
+          "src/billing.ts"
+        ]
+      }
+    },
+    {
+      "name": "caller",
+      "result": {
+        "lines": [
+          "Relevant code definitions (read these locations to verify behavior):",
+          "- invoice → src/api.ts:2"
+        ],
+        "files": [
+          "src/api.ts"
+        ]
+      }
+    },
+    {
+      "name": "off-topic",
+      "result": {
+        "lines": [],
+        "files": []
+      }
+    }
+  ],
+  "impact": {
+    "target": "src/billing.ts",
+    "kind": "file",
+    "direct": 1,
+    "transitive": 1,
+    "layers": [
+      {
+        "depth": 1,
+        "files": [
+          "src/api.ts"
+        ]
+      }
+    ],
+    "symbols": [
+      {
+        "symbol": "src/api.ts::invoice",
+        "depth": 1,
+        "via": "src/billing.ts::chargeCustomer"
+      }
+    ],
+    "affectedRoutes": [],
+    "truncated": false
+  }
+}

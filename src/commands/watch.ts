@@ -1,30 +1,29 @@
 import { watch as fsWatch, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { extname, dirname, join } from "node:path";
-import { repoRoot, repoFullName, currentBranch, memoryEnabled, repoActivated } from "../memory/store.js";
+import { repoRoot, repoFullName, currentBranch } from "../repository/git.js";
+import { kurtelEnabled, repoActivated } from "../storage/state.js";
 import {
   reindexNow,
   contentFingerprint,
   watcherRunning,
   pidFilePath,
-} from "../memory/reindex.js";
-import { learnFromCommit } from "../memory/learn.js";
+} from "../runtime/reindex.js";
 import { c, symbols } from "../ui/colors.js";
 
-// ── `kurtel watch`: réindexation continue, universelle (tout éditeur, pas que Claude Code) ──
-// Deux signaux fusionnés vers un même reindex débouncé:
-//   1. fs.watch récursif  → faible latence quand la plateforme le supporte.
-//   2. poll d'empreinte    → filet universel: capte create/delete ET éditions de
-//      contenu même si fs.watch rate des events ou n'est pas récursif (Linux/Node18).
-// Single-flight + débounce: une rafale d'écritures d'un agent = un seul reindex.
+// Two signals feed one debounced reindex:
+//   1. recursive fs.watch: low latency where the platform supports it;
+//   2. fingerprint polling: catches creates, deletes and edits even when fs.watch misses events or is not
+//      recursive (Linux, Node 18).
+// Single flight and debounce: a burst of writes from an agent is one reindex.
 
-const CODE_EXT = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".java", ".go", ".rs", ".cs"]);
+const CODE_EXT = new Set([".ts", ".mts", ".cts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".java", ".go", ".rs", ".cs"]);
 const IGNORE_SEG = /(^|[/\\])(node_modules|\.git|dist|build|out|\.next|\.nuxt|coverage|vendor|__pycache__|\.venv|venv|\.kurtel|\.claude|\.idea|\.vscode)([/\\]|$)/;
 
-const DEBOUNCE_MS = 2500;  // attendre le calme avant de reconstruire
-const POLL_MS = 10_000;    // cadence du filet de sécurité
+const DEBOUNCE_MS = 2500;  // wait for quiet before rebuilding
+const POLL_MS = 10_000;    // safety-net interval
 
 export interface WatchOptions {
-  daemon?: boolean; // spawné par ensureWatcher: aucune sortie
+  daemon?: boolean; // started by ensureWatcher: no output
 }
 
 export async function watchCommand(action: string, opts: WatchOptions = {}): Promise<void> {
@@ -33,7 +32,7 @@ export async function watchCommand(action: string, opts: WatchOptions = {}): Pro
   if (action === "stop") {
     const pid = watcherRunning(root);
     if (!pid) { console.log(`${c.dim("No watcher running for this repo.")}`); return; }
-    try { process.kill(pid, "SIGTERM"); } catch { /* déjà mort */ }
+    try { process.kill(pid, "SIGTERM"); } catch { /* */ }
     try { rmSync(pidFilePath(root), { force: true }); } catch { /* */ }
     console.log(`${symbols.check} Watcher stopped ${c.dim(`(pid ${pid})`)}.`);
     return;
@@ -46,10 +45,9 @@ export async function watchCommand(action: string, opts: WatchOptions = {}): Pro
     return;
   }
 
-  // action === "start" (défaut)
+  // action === "start" (default)
   if (!repoActivated(root)) {
-    // Opt-in: pas de watcher (donc pas de .kurtel/, pas d'index, pas d'upload)
-    // tant que le repo n'a pas été activé explicitement.
+    // No watcher (so no .kurtel/, no index, no upload) until the repository is activated.
     if (!opts.daemon) {
       console.log(`${c.yellow(symbols.warn)} Kurtel is not activated in this repo — run ${c.indigo("kurtel onboard")} first ${c.dim("(or `kurtel memory on` to activate without indexing).")}`);
     }
@@ -59,7 +57,7 @@ export async function watchCommand(action: string, opts: WatchOptions = {}): Pro
 }
 
 function runDaemon(root: string, silent: boolean): Promise<void> {
-  // Pas deux watchers pour le même repo.
+  // One watcher per repository.
   const existing = watcherRunning(root);
   if (existing && existing !== process.pid) {
     if (!silent) console.log(`${c.dim(`Watcher already running (pid ${existing}).`)}`);
@@ -87,26 +85,25 @@ function runDaemon(root: string, silent: boolean): Promise<void> {
       resolve();
     }
 
-    // Apprentissage local: tout nouveau commit du dev est un signal. Lecture seule,
-    // silencieux, best effort — jamais bloquant pour le reindex.
-    function checkCommit(): void {
-      if (stopped) return;
-      void learnFromCommit(root).catch(() => { /* best effort */ });
-    }
-
     async function fire(): Promise<void> {
       if (running) { dirty = true; return; }
       running = true;
-      do {
-        dirty = false;
-        if (memoryEnabled(root)) {
+      try {
+        do {
+          dirty = false;
+          const before = contentFingerprint(root);
+          if (!kurtelEnabled(root)) break;
           const ok = await reindexNow(root);
-          if (ok) log(`${symbols.check} ${c.dim(new Date().toISOString())} reindexed ${c.white(repoFullName(root))} ${c.dim(`(${currentBranch(root)})`)}`);
-        }
-      } while (dirty && !stopped);
-      // Resynchronise l'empreinte après coup (les fichiers ont pu changer pendant le build).
-      lastFp = contentFingerprint(root);
-      running = false;
+          if (!ok) break; // Keep the previous fingerprint so polling retries.
+          lastFp = before;
+          dirty = dirty || contentFingerprint(root) !== before;
+          log(`${symbols.check} ${c.dim(new Date().toISOString())} reindexed ${c.white(repoFullName(root))} ${c.dim(`(${currentBranch(root)})`)}`);
+        } while (dirty && !stopped);
+      } catch {
+        // A transient checkout/read error is retried by the next poll.
+      } finally {
+        running = false;
+      }
     }
 
     function schedule(): void {
@@ -115,13 +112,13 @@ function runDaemon(root: string, silent: boolean): Promise<void> {
       timer = setTimeout(() => { void fire(); }, DEBOUNCE_MS);
     }
 
-    // pidfile (le démarrage gagne la course; ensureWatcher a déjà filtré le cas courant).
+    // pidfile (the first start wins; ensureWatcher already filtered the common case).
     try {
       mkdirSync(dirname(pidFilePath(root)), { recursive: true });
       writeFileSync(pidFilePath(root), String(process.pid));
     } catch { /* best effort */ }
 
-    // Signal bas-latence: fs.watch récursif. Peut throw (Linux/Node18 sans support récursif) → poll-only.
+    // Low-latency signal: recursive fs.watch. May throw (Linux, Node 18): polling only then.
     let watcher: ReturnType<typeof fsWatch> | null = null;
     try {
       watcher = fsWatch(root, { recursive: true }, (_evt, filename) => {
@@ -131,37 +128,32 @@ function runDaemon(root: string, silent: boolean): Promise<void> {
         if (!CODE_EXT.has(extname(f))) return;
         schedule();
       });
-      watcher.on("error", () => { /* on garde le poll comme filet */ });
+      watcher.on("error", () => { /* */ });
     } catch {
       log(`${c.yellow(symbols.warn)} ${c.dim("recursive watch unavailable — relying on polling.")}`);
     }
 
-    // Signal bas-latence pour les commits: .git/logs/HEAD reçoit une ligne à chaque
-    // mouvement de HEAD (commit, reset…). fs.watch dessus → apprentissage immédiat.
+    // Low-latency signal: .git/logs/HEAD gets a line on every HEAD move (commit, reset, branch switch).
     try {
       const gitLog = join(root, ".git", "logs", "HEAD");
       if (existsSync(gitLog)) {
-        gitWatcher = fsWatch(gitLog, () => checkCommit());
-        gitWatcher.on("error", () => { /* le poll reste le filet */ });
+        gitWatcher = fsWatch(gitLog, () => { schedule(); });
+        gitWatcher.on("error", () => { /* */ });
       }
-    } catch { /* pas de reflog (worktree/submodule): le poll prend le relais */ }
+    } catch { /* */ }
 
-    // Filet universel: poll d'empreinte de contenu (structure + mtimes) + commits.
     const poll = setInterval(() => {
       if (stopped) return;
-      checkCommit(); // peu coûteux: un rev-parse + comparaison, ne fait rien si HEAD inchangé
       if (running) return;
       try {
         const fp = contentFingerprint(root);
-        if (fp !== lastFp) { lastFp = fp; schedule(); }
-      } catch { /* repo transitoire */ }
+        if (fp !== lastFp) schedule();
+      } catch { /* */ }
     }, POLL_MS);
-    // NB: pas de unref() — le poll doit garder le daemon en vie (filet si fs.watch meurt).
 
-    // Baseline: une reconstruction au démarrage garantit un index frais immédiatement.
+    // Baseline: a rebuild at start gives a fresh index at once.
     lastFp = contentFingerprint(root);
     void fire();
-    checkCommit(); // rattrape un éventuel commit fait pendant que le watcher était arrêté
 
     process.on("SIGTERM", cleanup);
     process.on("SIGINT", cleanup);

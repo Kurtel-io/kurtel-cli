@@ -1,24 +1,15 @@
 import { c, symbols } from "../ui/colors.js";
 import { Spinner } from "../ui/spinner.js";
-import {
-  repoRoot,
-  loadIndex,
-  loadMemoryCache,
-  headCommit,
-  indexGeneratedAt,
-  memoryEnabled,
-  setMemoryEnabled,
-  memoryDisabledGlobally,
-  repoActivated,
-  activateRepo,
-  injectionLogPath,
-  readInjectionLog,
-  clearInjectionLog,
-} from "../memory/store.js";
-import { syncNow } from "../memory/sync.js";
+import { repoRoot, headCommit } from "../repository/git.js";
+import { loadIndex, indexGeneratedAt } from "../storage/graph-index.js";
+import { kurtelEnabled, memoryEnabled, memorySwitchOn, setMemoryEnabled, memoryDisabledGlobally, repoActivated, activateRepo } from "../storage/state.js";
+import { accessGated, accessMemory } from "../storage/access.js";
+import { injectionLogPath } from "../storage/paths.js";
+import { readInjectionLog, clearInjectionLog } from "../storage/journal.js";
+import { disableSharing, enableSharing, sharedConfig, syncShared } from "../memory/shared.js";
 import { setConfigValue } from "../lib/config.js";
-import { importVecFile, vectorsInfo } from "../memory/embed.js";
-import { compileCapsule } from "../memory/capsule.js";
+import { importVecFile, vectorsInfo } from "../context/embeddings.js";
+import { compactContext } from "../context/compact.js";
 
 function ago(iso: string | null): string {
   if (!iso) return "never";
@@ -74,10 +65,14 @@ export async function memoryCommand(
         console.log(`${symbols.check} Global kill switch ${c.indigo("lifted")} — memory follows each repo's own on/off state again.`);
         return;
       }
-      // `on` vaut opt-in explicite: active aussi les repos jamais onboardés
-      // (état local hors repo — n'écrit rien dans le dossier).
       activateRepo(root);
       console.log(`${symbols.check} Kurtel memory ${c.indigo("enabled")} for this repo.`);
+      if (accessGated() && repoActivated(root) && !accessMemory(root)) {
+        console.log(`${c.yellow(symbols.warn)} ${c.dim("Memory is not included for this repository's organization: Kurtel gives the agent the codebase graph only.")}`);
+      }
+      if (!kurtelEnabled(root)) {
+        console.log(`${c.yellow(symbols.warn)} ${c.dim("Kurtel is off in this repository — turn it back on with")} ${c.indigo("kurtel on")}${c.dim(".")}`);
+      }
       if (memoryDisabledGlobally()) {
         console.log(`${c.yellow(symbols.warn)} ${c.dim("Note: the global kill switch is on — lift it with")} ${c.indigo("kurtel memory on --global")}${c.dim(".")}`);
       }
@@ -90,36 +85,33 @@ export async function memoryCommand(
         return;
       }
       setMemoryEnabled(root, false);
-      console.log(`${symbols.check} Kurtel memory ${c.yellow("disabled")} for this repo ${c.dim("(hooks stay installed, injection is skipped)")}.`);
+      console.log(`${symbols.check} Kurtel memory ${c.yellow("disabled")} for this repo ${c.dim("(the codebase graph stays on; kurtel off turns Kurtel off entirely)")}.`);
       return;
 
     case "sync": {
-      const spin = opts.quiet ? null : new Spinner("Syncing memory…").start();
-      const res = await syncNow(root);
-      spin?.succeed(`Synced · ${res.pulled} patterns pulled · ${res.flushed} telemetry events flushed`);
+      // Shared knowledge: send what was judged, receive teammates' knowledge.
+      const result = await syncShared(root);
+      if (!opts.quiet) console.log(result ? `Synced · ${result.pushed} sent · ${result.pulled} received` : c.dim("Sharing off (kurtel memory share on), or a synchronization is already running."));
       return;
     }
 
-    case "patterns": {
-      const cache = loadMemoryCache(root);
-      if (opts.json) { process.stdout.write(JSON.stringify(cache.patterns)); return; }
-      if (!cache.patterns.length) {
-        console.log(c.dim("No patterns yet. They are learned from merged PRs and pulled with `kurtel memory sync`."));
+    case "share": {
+      // Shared knowledge: on [endpoint] | off | status | now
+      const sub = args[0] ?? "status";
+      if (sub === "on") { const config = enableSharing(root, args[1]); console.log(`${c.green(symbols.check)} Knowledge shared for ${c.white(config.repo)} via ${c.dim(config.endpoint)}. Conversations stay on this machine.`); return; }
+      if (sub === "off") { disableSharing(root); console.log("Knowledge sharing off for this repository; local memory unchanged."); return; }
+      if (sub === "now") {
+        const result = await syncShared(root);
+        if (!opts.quiet) console.log(result ? `Shared · ${result.pushed} sent · ${result.pulled} received` : c.dim("Sharing off, or a synchronization is already running."));
         return;
       }
-      console.log("");
-      for (const p of [...cache.patterns].sort((a, b) => b.score - a.score)) {
-        const bar = "█".repeat(Math.round(p.score * 10)).padEnd(10, "░");
-        const zones = p.zones.length ? p.zones.join(", ") : "global";
-        console.log(`${c.indigo(bar)} ${c.dim(String(Math.round(p.score * 100)).padStart(3) + "%")} ${p.pinned ? c.yellow("★ ") : "  "}${c.white(p.rule)}`);
-        console.log(`             ${c.gray("zones")} ${c.dim(zones)} ${c.gray("· evidence")} ${c.dim(String(p.evidence.length) + " PRs")}`);
-      }
-      console.log("");
+      const config = sharedConfig(root);
+      if (opts.json) { process.stdout.write(JSON.stringify(config ? { enabled: config.enabled, endpoint: config.endpoint, repo: config.repo, cursor: config.cursor, sent: config.pushed.length, received: config.adopted.length } : { enabled: false }) + "\n"); return; }
+      console.log(config?.enabled ? `${c.gray("sharing")}   on · ${config.repo} · ${config.pushed.length} sent · ${config.adopted.length} received · ${c.dim(config.endpoint)}` : `${c.gray("sharing")}   off ${c.dim("(kurtel memory share on)")}`);
       return;
     }
-
     case "log": {
-      // Journal local de TOUT ce que la mémoire a injecté, prompt par prompt.
+      // Local journal of everything Kurtel injected, prompt by prompt.
       const file = injectionLogPath(root);
       if (args[0] === "clear") {
         clearInjectionLog(root);
@@ -146,9 +138,7 @@ export async function memoryCommand(
 
     case "preview":
     case "inspect": {
-      // Montre EXACTEMENT ce que le hook `user-prompt-submit` injecterait pour un
-      // prompt donné. L'injection est déterministe et locale → ce preview EST ce
-      // que Claude Code reçoit, pas une approximation. (cf. hook.ts:onPrompt)
+      // Preview the current selection without consuming a session's delivery ledger.
       const prompt = (args ?? []).join(" ").trim();
       if (!prompt) {
         console.log(`${c.red(symbols.cross)} Usage: ${c.indigo('kurtel memory preview "<your prompt>"')}`);
@@ -157,29 +147,32 @@ export async function memoryCommand(
       }
 
       const index = loadIndex(root);
-      const cache = loadMemoryCache(root);
-      const enabled = memoryEnabled(root);
+      const enabled = kurtelEnabled(root);
 
-      // Mêmes gardes que le hook: prompts trop courts ou slash-commands = silence.
+      // Same guards as the hook: short prompts and slash commands stay silent.
       const skipped = !repoActivated(root)
         ? "repo is not activated (`kurtel onboard` or `kurtel memory on`)"
         : !enabled
-        ? "memory is disabled for this repo (`kurtel memory on`)"
+        ? "Kurtel is off in this repository (`kurtel on`)"
         : prompt.length < 8
         ? "prompt is under 8 chars — the hook stays silent"
         : prompt.startsWith("/")
         ? "prompt is a slash command — the hook stays silent"
         : null;
 
-      const capsule = skipped ? null : compileCapsule(index, cache.patterns, prompt, root);
+      const capsule = skipped ? null : await compactContext(root, index, prompt);
 
       if (opts.json) {
         process.stdout.write(JSON.stringify({
           prompt,
-          would_inject: Boolean(capsule),
+          would_inject: Boolean(capsule?.text),
           skipped_reason: skipped,
           text: capsule?.text ?? null,
-          injected_pattern_ids: capsule?.injectedPatternIds ?? [],
+          tokens: capsule?.tokens ?? 0,
+          tokenizer: capsule?.tokenizer,
+          omitted: capsule?.omitted ?? [],
+          warnings: capsule?.warnings ?? [],
+          session_deduplication_applied: false,
           zones: capsule?.zones ?? [],
         }));
         return;
@@ -187,16 +180,16 @@ export async function memoryCommand(
 
       console.log("");
       console.log(`${c.gray("prompt")}    ${c.white(prompt)}`);
-      if (!capsule) {
+      if (!capsule?.text) {
         console.log(`${c.gray("inject")}    ${c.yellow("○ nothing")} ${c.dim(`— ${skipped ?? "no relevant context (silence is the default)"}`)}`);
         console.log("");
         return;
       }
-      console.log(`${c.gray("inject")}    ${c.indigo("● capsule")} ${c.dim(`(${capsule.text.length} chars · ${capsule.injectedPatternIds.length} patterns · zones: ${capsule.zones.join(", ") || "none"})`)}`);
+      console.log(`${c.gray("inject")}    ${c.indigo("● capsule")} ${c.dim(`(${capsule.tokens} ${capsule.tokenizer} tokens · zones: ${capsule.zones.join(", ") || "none"})`)}`);
       console.log(c.dim("─".repeat(60)));
       console.log(capsule.text);
       console.log(c.dim("─".repeat(60)));
-      console.log(c.dim("This is the exact text added to the agent's context for this prompt."));
+      console.log(c.dim("Preview before session deduplication. Hooks may omit context already delivered; token count uses a local reference tokenizer."));
       console.log("");
       return;
     }
@@ -205,19 +198,20 @@ export async function memoryCommand(
     case "status": {
       const activated = repoActivated(root);
       const globalOff = memoryDisabledGlobally();
+      const on = kurtelEnabled(root);
       const enabled = memoryEnabled(root) && activated;
+      // Memory included in the organization's plan (always, in an enterprise deployment).
+      const included = !accessGated() || accessMemory(root);
       const index = loadIndex(root);
-      const cache = loadMemoryCache(root);
 
       if (opts.json) {
         process.stdout.write(JSON.stringify({
+          kurtel: on,
           enabled,
+          included,
           activated,
           global_off: globalOff,
           index: index ? { files: index.files_indexed, routes: index.routes.length, commit: headCommit(root), generated_at: indexGeneratedAt(root) } : null,
-          patterns: cache.patterns.length,
-          synced_at: cache.patterns_synced_at,
-          pending_telemetry: cache.pending_telemetry.length,
         }));
         return;
       }
@@ -225,10 +219,16 @@ export async function memoryCommand(
       console.log("");
       const state = !activated
         ? `${c.yellow("○ not activated")} ${c.dim("— run `kurtel onboard` (or `kurtel memory on`) to opt this repo in")}`
+        : !on
+        ? `${c.yellow("○ Kurtel off")} ${c.dim("— graph and memory; `kurtel on` to turn it back on")}`
+        : !included
+        ? `${c.yellow("○ graph only")} ${c.dim("— memory is not included for this repository's organization")}`
         : globalOff
         ? `${c.yellow("○ disabled globally")} ${c.dim("(`kurtel memory on --global` to lift)")}`
         : enabled
         ? c.indigo("● active")
+        : !memorySwitchOn(root)
+        ? `${c.yellow("○ graph only")} ${c.dim("— memory turned off here (`kurtel memory on`)")}`
         : c.yellow("○ disabled");
       console.log(`${c.gray("memory")}    ${state}`);
       if (index) {
@@ -236,17 +236,13 @@ export async function memoryCommand(
       } else {
         console.log(`${c.gray("index")}     ${c.dim("none — run `kurtel onboard`")}`);
       }
-      console.log(`${c.gray("patterns")}  ${c.white(String(cache.patterns.length))} ${c.dim(`(synced ${ago(cache.patterns_synced_at)})`)}`);
-      if (cache.pending_telemetry.length) {
-        console.log(`${c.gray("pending")}   ${c.dim(`${cache.pending_telemetry.length} telemetry events (flushed on next sync)`)}`);
-      }
       console.log("");
       return;
     }
 
     default:
       console.log(
-        `${c.red(symbols.cross)} Unknown action ${c.white(action)}. Try ${c.indigo("status")}, ${c.indigo("on")}, ${c.indigo("off")}, ${c.indigo("sync")}, ${c.indigo("patterns")}, ${c.indigo("preview")}, or ${c.indigo("log")}.`
+        `${c.red(symbols.cross)} Unknown action ${c.white(action)}. Try ${c.indigo("status")}, ${c.indigo("on")}, ${c.indigo("off")}, ${c.indigo("sync")}, ${c.indigo("share")}, ${c.indigo("preview")}, or ${c.indigo("log")}.`
       );
       process.exitCode = 1;
   }

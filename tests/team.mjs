@@ -1,0 +1,113 @@
+// Memory mechanics in throwaway repositories: activation by project markers, not by kurtel.io access.
+process.env.KURTEL_ACTIVATION ??= "markers";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const temp = mkdtempSync(join(tmpdir(), 'kurtel-team-client-'));
+const rootA = join(temp, 'repo-a'), rootB = join(temp, 'repo-b'), homeA = join(temp, 'alice'), homeB = join(temp, 'bob');
+for (const p of [rootA, rootB, homeA, homeB]) mkdirSync(p);
+const home = p => { process.env.HOME = p; process.env.USERPROFILE = p; };
+home(homeA);
+const { loginTeam, bindTeam, preparePublication, teamOperation, logoutTeam, teamWhoami } = await import('../dist/memory/team.js');
+const { activateRepo } = await import('../dist/storage/state.js');
+const { compactContext } = await import('../dist/context/compact.js');
+const { deliverContext } = await import('../dist/context/delivery.js');
+const { appendKnowledge, readKnowledge, emptyBatch } = await import('../dist/storage/knowledge.js');
+const { setCaptureEnabled, captureHook, ingestSession } = await import('../dist/integrations/session-capture.js');
+const { recordInjection, usagePath } = await import('../dist/storage/usage.js');
+const { saveNetworkPolicy } = await import('../dist/security/network.js');
+const token = actor => `${actor}-personal-secret-0123456789abcdef`;
+let server, requests = [], privateEngine = false;
+if (process.env.KURTEL_TEST_ENGINE) {
+  const { createTeamService } = await import(pathToFileURL(join(process.env.KURTEL_TEST_ENGINE, 'team.mjs')));
+  const { createEngineServer } = await import(pathToFileURL(join(process.env.KURTEL_TEST_ENGINE, 'server.mjs')));
+  const principals = ['alice', 'bob'].map(actor => ({ actor, token_sha256: createHash('sha256').update(token(actor)).digest('hex'), expires_at: '2030-01-01T00:00:00Z', grants: [{ team: 'alpha', repo: 'org/repo', role: 'member' }] }));
+  const team = createTeamService({ file: join(temp, 'server-store.json'), principals: () => principals });
+  server = createEngineServer({ token: token('inference'), team: { handle: (auth, body) => { requests.push(body); return team.handle(auth, body); } }, model: () => { throw Error('No inference allowed'); } });
+  privateEngine = true;
+} else {
+  const { teamFixture } = await import('./fixtures/team-engine.mjs');
+  ({ server, requests } = teamFixture());
+}
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const origin = `http://127.0.0.1:${server.address().port}`, endpoint = origin + '/v2/team';
+const content = 'Reuse the same idempotency key for every payment retry.';
+try {
+  activateRepo(rootA);
+  const now = new Date().toISOString();
+  appendKnowledge(rootA, () => ({ ...emptyBatch(), sources: [{ id: 'private', kind: 'conversation', reference: 'PRIVATE_SESSION', revision: null, content: 'PRIVATE_TRANSCRIPT with customer credentials', recorded_at: now }], versions: [{ id: 'v1', knowledge_id: 'retry', version: 1, previous_version_id: null, kind: 'decision', state: 'active', content, zones: ['src/payment.ts'], source_ids: ['private'], event_ids: [], recorded_at: now, valid_from: null, valid_until: null, legacy_pattern_id: null, legacy_score: null }] }));
+  await loginTeam(endpoint, token('alice')); await bindTeam(rootA, 'alpha', 'org/repo');
+  assert.equal((await teamWhoami()).actor, 'alice');
+  setCaptureEnabled(rootA, true);
+  captureHook(rootA, 'user-prompt-submit', { session_id: 'alice-session', prompt: 'Fix payment retry.' });
+  ingestSession(rootA, 'alice-session');
+  assert.equal(readKnowledge(rootA).events.find(e => e.kind === 'instruction').actor, 'alice');
+  const draft = preparePublication(rootA, 'v1');
+  assert(!JSON.stringify(draft).includes('PRIVATE_')); assert.equal(draft.evidence[0].summary, '');
+  home(homeB); activateRepo(rootB);
+  await loginTeam(endpoint, token('bob')); await bindTeam(rootB, 'alpha', 'org/repo');
+  assert.equal((await compactContext(rootB, null, 'Edit src/payment.ts', { memoryOnly: true, paths: ['src/payment.ts'] })).text, '', 'Nothing shared implicitly');
+  home(homeA);
+  draft.evidence[0].summary = 'Reviewed retry recovery; the key must remain stable across attempts.';
+  draft.reason = 'Share the reviewed lesson with the team.'; draft.kind = 'lesson';
+  await teamOperation(rootA, { action: 'publish', publication: draft });
+  home(homeB);
+  const result = await compactContext(rootB, null, 'Edit src/payment.ts', { memoryOnly: true, paths: ['src/payment.ts'], budget: 600 });
+  assert.match(result.text, /same idempotency key/); assert.match(result.text, /alice/); assert(result.tokens <= 600);
+  assert.equal(result.selected.length, 1);
+  const client = new Client({ name: 'team-history-test', version: '1' });
+  await client.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../dist/index.js', import.meta.url)), 'mcp', '--root', rootB], env: { ...process.env }, stderr: 'pipe' }));
+  try {
+    const history = await client.callTool({ name: 'get_team_history', arguments: { id: draft.id } });
+    assert(!history.isError);
+    const raw = history.content.map(c => c.text ?? '').join('');
+    assert(raw.includes(draft.evidence[0].summary));
+    assert(raw.includes(draft.reason));
+    assert(!raw.includes('PRIVATE_'));
+  } finally { await client.close(); }
+
+  assert(!result.text.includes('PRIVATE_'));
+  const hook = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../dist/index.js', import.meta.url)), 'hook', 'pre-tool-use'], { cwd: rootB, env: { ...process.env, KURTEL_PRE_EDIT: 'gate' }, windowsHide: true });
+    let out = '', err = ''; child.stdout.on('data', c => out += c); child.stderr.on('data', c => err += c);
+    child.on('error', reject); child.on('close', code => code === 0 ? resolve(out) : reject(Error(err)));
+    child.stdin.end(JSON.stringify({ cwd: rootB, session_id: 'real-hook-b', tool_name: 'Edit', tool_input: { file_path: 'src/payment.ts' } }));
+  });
+  const held = JSON.parse(await hook());
+  assert.equal(held.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(held.hookSpecificOutput.permissionDecisionReason, /same idempotency key/);
+  assert.equal(await hook(), '', 'Repeated edit is not held again');
+  const before = requests.length;
+  assert.equal((await compactContext(rootB, null, 'Edit src/payment.ts', { graphOnly: true })).text, '');
+  assert.equal(requests.length, before, 'Graph-only makes no team request');
+  assert.equal((await compactContext(rootB, null, 'Edit src/other.ts', { memoryOnly: true, paths: ['src/other.ts'] })).text, '');
+  assert.equal(readKnowledge(rootB).versions.length, 0, 'Shared data never becomes durable private memory');
+  recordInjection(rootB, 'b-session', 'pre-edit', result.tokens, result.items);
+  assert(!existsSync(usagePath(rootB)), 'Shared paths and payload absent from journal');
+  deliverContext(rootB, 'b-session', result.items, result.revision, () => {}, { stillValid: result.stillValid });
+  const allText = dir => readdirSync(dir, { withFileTypes: true }).map(e => e.isDirectory() ? allText(join(dir, e.name)) : readFileSync(join(dir, e.name), 'utf8')).join('');
+  assert(!allText(homeB).includes(content), 'No shared prose in local cache or ledger');
+  assert(!allText(rootB).includes(content), 'No shared prose in the human-readable injection journal');
+  assert(!JSON.stringify(requests).includes('PRIVATE_'), 'Raw conversations never reach transport');
+  home(homeA); await teamOperation(rootA, { action: 'erase', id: draft.id }); home(homeB);
+  const erased = await compactContext(rootB, null, 'Edit src/payment.ts', { memoryOnly: true, paths: ['src/payment.ts'] });
+  assert.equal(erased.text, ''); assert.equal(erased.stillValid(result.items[0].key), false);
+  assert.match(JSON.parse(await hook()).hookSpecificOutput.additionalContext, /Previously injected memory is stale/);
+  assert.match(deliverContext(rootB, 'b-session', erased.items, erased.revision, () => {}, { stillValid: erased.stillValid }).text, /Previously injected memory is stale/);
+  saveNetworkPolicy({ version: 1, mode: 'offline', engine_origins: [] });
+  const count = requests.length;
+  assert((await compactContext(rootB, null, 'Edit src/payment.ts')).warnings.includes('team_memory_unavailable'));
+  assert.equal(requests.length, count);
+  saveNetworkPolicy({ version: 1, mode: 'private', engine_origins: [origin] });
+  assert.equal((await teamWhoami()).actor, 'bob');
+  logoutTeam(); assert.equal(await teamWhoami(), null);
+  assert((await compactContext(rootB, null, 'Edit src/payment.ts')).warnings.includes('team_memory_unavailable'));
+  console.log(`Team memory passed: two identities, explicit publication, pre-edit delivery, no shared disk payload, erasure, offline/private policy (${privateEngine ? 'real private engine' : 'public transport fixture'}). No claim of agent error avoidance.`);
+} finally { await new Promise(resolve => server.close(resolve)); }

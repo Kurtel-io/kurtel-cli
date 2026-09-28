@@ -1,0 +1,82 @@
+// Memory mechanics in throwaway repositories: activation by project markers, not by kurtel.io access.
+process.env.KURTEL_ACTIVATION ??= "markers";
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:http';
+const fixture = mkdtempSync(join(tmpdir(), 'kurtel-learning-'));
+const root = join(fixture, 'repo'), home = join(fixture, 'home'); mkdirSync(root); mkdirSync(home);
+process.env.HOME = home; process.env.USERPROFILE = home;
+const { activateRepo, setMemoryEnabled } = await import('../dist/storage/state.js');
+const { captureHook, setCaptureEnabled, ingestSession } = await import('../dist/integrations/claude-code/capture.js');
+const { readKnowledge, knowledgePath } = await import('../dist/storage/knowledge.js');
+const { prepareExtraction, applyExtraction, configureLearning, learnSession, resumeContext, selectResume, consumeResume, compactWorking } = await import('../dist/memory/session-learning.js');
+activateRepo(root); setCaptureEnabled(root, true);
+assert.equal(compactWorking([{ event_id: 'one', quote: 'Constraint', category: 'constraint' }, { event_id: 'one', quote: 'Constraint with reason', category: 'constraint' }]).length, 1);
+assert.equal(compactWorking([{ event_id: 'one', quote: 'Constraint', category: 'constraint' }, { event_id: 'two', quote: 'Constraint with reason', category: 'constraint' }]).length, 2, 'distinct evidence is not silently merged');
+const sid = 'learning-test';
+const instruction = 'Ne jamais modifier lib/stripe.ts car le contrat impose cette interface.';
+captureHook(root, 'user-prompt-submit', { session_id: sid, prompt_id: 'p1', prompt: instruction });
+captureHook(root, 'stop', { session_id: sid, prompt_id: 'p1', last_assistant_message: 'Je propose Redis pour ce projet. Les tests seraient à lancer.' });
+ingestSession(root, sid);
+let store = readKnowledge(root), request = prepareExtraction(store, sid);
+const user = request.events.find(e => e.role === 'user'), agent = request.events.find(e => e.role === 'assistant');
+const response = { protocol: 1, batch_id: request.batch_id, engine: 'test-engine', candidates: [{ event_id: user.id, quote: 'Ne jamais modifier lib/stripe.ts', kind: 'constraint', zones: ['lib/stripe.ts'], reason_event_id: user.id, reason_quote: 'le contrat impose cette interface' }, { event_id: agent.id, quote: 'Je propose Redis pour ce projet.', kind: 'decision', zones: [] }], working: [{ event_id: user.id, quote: instruction, category: 'constraint' }, { event_id: agent.id, quote: 'Les tests seraient à lancer.', category: 'next_step' }] };
+assert.throws(() => applyExtraction(root, request, { ...response, candidates: [{ ...response.candidates[0], quote: 'Invented approved decision' }] }), /Ungrounded/);
+assert.equal(readKnowledge(root).versions.length, 0);
+applyExtraction(root, request, response);
+store = readKnowledge(root);
+// Automatic memory: extracted knowledge is active by default, no promotion needed.
+assert(store.versions.every(v => v.state === 'active'));
+assert.equal(store.relations.filter(r => r.kind === 'motivated_by').length, 1);
+const revision = store.revision;
+applyExtraction(root, request, response);
+assert.equal(readKnowledge(root).revision, revision);
+assert.equal(prepareExtraction(readKnowledge(root), sid), null);
+assert.match(resumeContext(root, sid), /Ne jamais modifier lib\/stripe.ts/);
+assert.match(resumeContext(root, sid), /not instructions or verified completion/);
+selectResume(root, sid);
+assert.match(consumeResume(root, 'new-session'), /lib\/stripe.ts/);
+assert.equal(consumeResume(root, 'new-session'), '');
+
+captureHook(root, 'user-prompt-submit', { session_id: sid, prompt_id: 'p2', prompt: 'Inspecte la validation de paiement sans effectuer de modification.' });
+ingestSession(root, sid);
+request = prepareExtraction(readKnowledge(root), sid);
+assert.equal(request.events.length, 1);
+assert(request.context_events.some(e => e.id === user.id));
+let calls = 0, mode = 'fail';
+const server = createServer(async (req, res) => {
+  calls++; let text = ''; for await (const part of req) text += part;
+  const batch = JSON.parse(text);
+  if (mode === 'fail') { res.writeHead(503); res.end('{}'); return; }
+  if (mode === 'lock') writeFileSync(knowledgePath(root) + '.lock', 'other writer');
+  if (mode === 'disable') setMemoryEnabled(root, false);
+  res.setHeader('content-type', 'application/json');
+  res.end(JSON.stringify({ protocol: 1, engine: 'test', batch_id: batch.batch_id, candidates: [], working: [{ event_id: batch.events[0].id, quote: batch.events[0].content, category: 'goal' }] }));
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+try {
+  assert.throws(() => configureLearning(root, 'http://example.com/v1/extract'), /HTTPS/);
+  configureLearning(root, `http://127.0.0.1:${server.address().port}/v1/extract`);
+  process.env.KURTEL_ENGINE_TOKEN = 'test-token';
+  await assert.rejects(learnSession(root, sid), /503/);
+  assert(prepareExtraction(readKnowledge(root), sid));
+  mode = 'lock';
+  await assert.rejects(learnSession(root, sid), /locked/);
+  unlinkSync(knowledgePath(root) + '.lock');
+  const paidCalls = calls;
+  assert.equal((await learnSession(root, sid)).processed, 1);
+  assert.equal(calls, paidCalls, 'validated response is reused after local lock failure');
+  assert.equal((await learnSession(root, sid)).processed, 0);
+  assert.match(resumeContext(root, sid), /Ne jamais modifier/);
+  assert.match(resumeContext(root, sid), /Inspecte la validation/);
+  captureHook(root, 'user-prompt-submit', { session_id: sid, prompt_id: 'p3', prompt: 'Nouvelle contrainte encore non traitée.' });
+  mode = 'disable';
+  await assert.rejects(learnSession(root, sid), /changed/);
+  assert(prepareExtraction(readKnowledge(root), sid));
+  setMemoryEnabled(root, true);
+  configureLearning(root);
+  await assert.rejects(learnSession(root, sid), /disabled/);
+} finally { await new Promise(resolve => server.close(resolve)); }
+console.log('PASS: incremental receipts, grounded extraction, active by default, working memory, retries, response reuse and kill switches.');

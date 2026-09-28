@@ -1,7 +1,7 @@
 {
   "name": "@kurtel/cli",
-  "version": "1.0.6",
-  "description": "Launch self-improving coding agents in the cloud — the Kurtel CLI.",
+  "version": "1.1.0",
+  "description": "Codebase graph and team memory for coding assistants.",
   "type": "module",
   "bin": {
     "kurtel": "dist/index.js"
@@ -17,24 +17,39 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/clean-dist.mjs && tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "benchmark": "npm run build && node scripts/benchmark.mjs",
+    "test": "npm run build && node tests/regression.mjs && node tests/graph.mjs && node tests/navigation.mjs && node tests/knowledge.mjs && node tests/store-migration.mjs && node tests/knowledge-history.mjs && node tests/decision-trace.mjs && node tests/session-capture.mjs && node tests/session-learning.mjs && node tests/automatic-memory.mjs && node tests/plan-memory.mjs && node tests/capture-retention.mjs && node tests/shared-memory.mjs && node tests/branch-visibility.mjs && node tests/maintenance.mjs && node tests/team.mjs && node tests/web-team.mjs && node tests/team-guidance.mjs && node tests/darwinian.mjs && node tests/compact-context.mjs && node tests/mcp.mjs && node tests/codex-install.mjs && node tests/codex-capture.mjs && node tests/private-deployment.mjs && node tests/product-evaluation.mjs && node tests/longitudinal.mjs",
+    "test:errors": "npm run build",
+    "test:lessons": "npm run build",
+    "test:maintenance": "npm run build && node tests/maintenance.mjs",
+    "test:team": "npm run build && node tests/team.mjs",
+    "eval:longitudinal": "npm run build && node eval/longitudinal.mjs"
   },
   "keywords": [
     "kurtel",
     "ai",
-    "coding-agent",
-    "cli",
-    "cloud",
-    "agents"
+    "codebase",
+    "graph",
+    "memory",
+    "cli"
   ],
   "license": "UNLICENSED",
   "dependencies": {
-    "commander": "^12.1.0"
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "better-sqlite3": "^11.10.0",
+    "commander": "^12.1.0",
+    "jsonc-parser": "3.3.1",
+    "smol-toml": "1.9.0",
+    "tree-sitter-wasms": "0.1.13",
+    "web-tree-sitter": "0.20.8",
+    "zod": "4.6.5"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.7.0",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2"

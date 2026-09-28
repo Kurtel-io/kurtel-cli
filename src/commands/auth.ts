@@ -3,17 +3,18 @@ import { Spinner, sleep } from "../ui/spinner.js";
 import { loadConfig, saveSession, clearSession } from "../lib/config.js";
 import { startDeviceAuth, pollDeviceAuth } from "../lib/api.js";
 import { openBrowser } from "../lib/browser.js";
+import { loginTeam, logoutTeam, teamWhoami } from "../memory/team.js";
+import { clearAccess } from "../storage/access.js";
 
-export async function loginCommand(): Promise<void> {
+export async function loginCommand(options: { teamEndpoint?: string; tokenEnv?: string } = {}): Promise<void> {
+  if (options.teamEndpoint) {
+    const token = process.env[options.tokenEnv ?? "KURTEL_TEAM_TOKEN"];
+    if (!token) throw new Error("Set KURTEL_TEAM_TOKEN (or --token-env) to your personal server-issued token");
+    console.log(JSON.stringify(await loginTeam(options.teamEndpoint, token), null, 2)); return;
+  }
   const config = loadConfig();
   if (config.loggedIn && config.token) {
-    console.log(
-      `${symbols.check} Already signed in as ${c.indigo(
-        config.account ?? "your account"
-      )}${
-        config.organization ? c.dim(` · ${config.organization}`) : ""
-      }.`
-    );
+    console.log(`${symbols.check} Already signed in as ${c.indigo(config.account ?? "your account")}.`);
     console.log(`${c.dim("Run")} ${c.indigo("kurtel logout")} ${c.dim("to switch accounts.")}`);
     return;
   }
@@ -66,17 +67,11 @@ export async function loginCommand(): Promise<void> {
     }
 
     if (res.status === "authorized") {
-      saveSession({
-        token: res.token,
-        account: res.account,
-        organization: res.organization,
-      });
-      spin.succeed(
-        `Signed in as ${c.indigo(res.account ?? "your account")}${
-          res.organization ? c.dim(` · ${res.organization}`) : ""
-        }`
-      );
-      console.log(c.dim("You can close the browser tab."));
+      saveSession({ token: res.token, account: res.account });
+      // Access answers belonged to the previous account: every folder asks again.
+      clearAccess();
+      spin.succeed(`Signed in as ${c.indigo(res.account ?? "your account")}`);
+      console.log(c.dim("You can close the browser tab. Kurtel turns on in the repositories your organizations gave you access to."));
       return;
     }
 
@@ -99,16 +94,20 @@ export async function loginCommand(): Promise<void> {
 }
 
 export async function logoutCommand(): Promise<void> {
+  const hadTeamSession = logoutTeam();
   const config = loadConfig();
   if (!config.loggedIn) {
-    console.log(c.dim("You're not signed in."));
+    console.log(hadTeamSession ? `${symbols.check} Signed out of team memory.` : c.dim("You're not signed in."));
     return;
   }
   clearSession();
+  clearAccess();
   console.log(`${symbols.check} Signed out.`);
 }
 
-export function whoamiCommand(): void {
+export async function whoamiCommand(): Promise<void> {
+  const team = await teamWhoami();
+  if (team) { console.log(JSON.stringify(team, null, 2)); return; }
   const config = loadConfig();
   if (!config.loggedIn || !config.token) {
     console.log(`${c.dim("Not signed in. Run")} ${c.indigo("kurtel login")}${c.dim(".")}`);
@@ -116,7 +115,5 @@ export function whoamiCommand(): void {
     return;
   }
   console.log(`${c.indigo(symbols.info)} ${c.white(config.account ?? "unknown account")}`);
-  if (config.organization) {
-    console.log(`${c.gray("org")} ${c.white(config.organization)}`);
-  }
+  console.log(c.dim("The organization depends on the repository: run kurtel access in it."));
 }

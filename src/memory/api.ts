@@ -1,19 +1,18 @@
+import { policyFetch } from "../security/network.js";
 import { apiUrl, loadConfig } from "../lib/config.js";
 import { AuthError } from "../lib/api.js";
-import type { CodebaseIndex, DarwinPattern, TelemetryEvent } from "./store.js";
-
-// ── API mémoire kurtel-app ──
-// repo passé en query param (?repo=owner/name): un "/" dans un segment de path Next.js/Vercel est fragile.
+import type { CodebaseIndex } from "../domain/types.js";
+import { accessGated, activeAccess, denyAccess, type AccessReason } from "../storage/access.js";
 
 async function authed<T>(method: "GET" | "PUT" | "POST", path: string, body?: unknown): Promise<T> {
   const token = loadConfig().token as string | undefined;
   if (!token) throw new AuthError("Not signed in. Run `kurtel login`.");
 
-  const res = await fetch(`${apiUrl()}${path}`, {
+  const res = await policyFetch(`${apiUrl()}${path}`, {
     method,
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  }, "cloud");
   const text = await res.text();
   let data: unknown = {};
   try { data = text ? JSON.parse(text) : {}; } catch { /* non-JSON */ }
@@ -23,23 +22,11 @@ async function authed<T>(method: "GET" | "PUT" | "POST", path: string, body?: un
   return data as T;
 }
 
-const q = (repo: string, extra: Record<string, string> = {}) =>
-  "?" + new URLSearchParams({ repo, ...extra }).toString();
-
-/** Pull delta de la mémoire darwinienne (repo_skills côté backend). */
-export function pullPatterns(repo: string, since?: string | null): Promise<{
-  patterns: DarwinPattern[];
-  synced_at: string;
-  delta: boolean;
-}> {
-  return authed("GET", `/api/memory/patterns${q(repo, since ? { since } : {})}`);
-}
-
-/** Push de la mémoire de codebase (digest, jamais le code source) — par branche. */
-export function pushIndex(repo: string, index: CodebaseIndex, commit: string): Promise<{ ok: boolean }> {
+/** Uploads the graph digest (never source code) for this branch. A refusal turns Kurtel off here. */
+export async function pushIndex(root: string, index: CodebaseIndex, commit: string): Promise<{ ok: boolean }> {
+  const access = accessGated() ? activeAccess(root) : null;
+  if (accessGated() && !access) throw new Error("This repository is not declared by your organization, or you have no access to it.");
   const branch = index.branch || "main";
-  // `commit` n'est plus dans l'index (évite la churn git); on l'attache en live au push
-  // pour garder la colonne d'observabilité `repo_memory.commit` à jour.
   const digest = {
     ...index,
     commit,
@@ -49,47 +36,12 @@ export function pushIndex(repo: string, index: CodebaseIndex, commit: string): P
       symbols: (m.symbols ?? []).slice(0, 25).map((sy) => ({ ...sy, calls: sy.calls.slice(0, 15) })),
     })).slice(0, 3000),
   };
-  return authed("PUT", `/api/memory/index${q(repo, { branch })}`, digest);
-}
-
-/** Push asynchrone de la télémétrie d'usage des patterns. */
-export function pushTelemetry(repo: string, events: TelemetryEvent[]): Promise<{ ok: boolean }> {
-  return authed("POST", `/api/memory/telemetry${q(repo)}`, { events });
-}
-
-/** Apprentissage local: diff d'un commit (distillé) ou règle explicite. */
-export interface LearnPayload {
-  source: "commit" | "explicit";
-  commit_sha?: string;
-  change_fp?: string;
-  message?: string;
-  diff?: string;
-  rules?: string[];
-  // Ids des skills injectés à l'agent depuis le commit parent → signal négatif
-  // "injected-then-violated" si le commit en viole un (cf. recordViolation backend).
-  injected_ids?: string[];
-}
-export function postLearnEvent(
-  repo: string,
-  payload: LearnPayload
-): Promise<{ ok: boolean; learned?: number; violations?: number; skipped?: string }> {
-  return authed("POST", `/api/memory/learn${q(repo)}`, payload);
-}
-
-/** Import des skills écrits à la main (onboarding) → patterns distillés côté backend. */
-export interface SkillDocPayload {
-  path: string;
-  content: string;
-}
-export function pushSkills(
-  repo: string,
-  docs: SkillDocPayload[]
-): Promise<{
-  ok: boolean;
-  imported?: number;
-  merged?: number;
-  docs_processed?: number;
-  docs_skipped?: number;
-}> {
-  return authed("POST", `/api/memory/skills${q(repo)}`, { docs });
+  const query = new URLSearchParams({ ...(access ? { remote: access.remote, organization: access.organization.id } : {}), repo: index.repo, branch });
+  try {
+    return await authed("PUT", `/api/memory/index?${query}`, digest);
+  } catch (error) {
+    const reason = (error as Error).message;
+    if (["no_access", "not_declared", "organization_required"].includes(reason)) denyAccess(root, reason as AccessReason);
+    throw error;
+  }
 }

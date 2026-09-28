@@ -1,6 +1,4 @@
-// Lightweight ANSI styling — no dependencies.
-// Honors NO_COLOR and non-TTY output.
-
+// ANSI styling; honors NO_COLOR and non-TTY output.
 const enabled =
   process.env.NO_COLOR === undefined &&
   process.env.TERM !== "dumb" &&
@@ -10,7 +8,7 @@ function wrap(open: string, close = "\x1b[0m") {
   return (s: string | number) => (enabled ? `${open}${s}${close}` : String(s));
 }
 
-// Brand indigo (#6798ff) via 24-bit truecolor, with graceful no-op fallback.
+// Brand indigo #6798ff
 const indigoOpen = "\x1b[38;2;103;152;255m";
 
 export const c = {
@@ -21,11 +19,9 @@ export const c = {
   italic: wrap("\x1b[3m"),
   underline: wrap("\x1b[4m"),
 
-  // brand
   indigo: wrap(indigoOpen),
   indigoBold: wrap(`\x1b[1m${indigoOpen}`),
 
-  // neutrals / semantic
   white: wrap("\x1b[97m"),
   gray: wrap("\x1b[90m"),
   ash: wrap("\x1b[37m"),
@@ -34,7 +30,6 @@ export const c = {
   red: wrap("\x1b[31m"),
   cyan: wrap("\x1b[36m"),
 
-  // background
   bgIndigo: wrap("\x1b[48;2;103;152;255m\x1b[30m"),
 };
 

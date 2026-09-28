@@ -10,3 +10,9 @@ bench/results.csv
 bench/tasks.json
 bench/
 .claude/
+eval-results/
+docs/
+eval/
+
+.env
+.env.*

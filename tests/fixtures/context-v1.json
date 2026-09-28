@@ -1,0 +1,73 @@
+{
+  "results": [
+    {
+      "name": "billing-context",
+      "result": {
+        "text": "[Kurtel memory — auto-injected, relevant to this task only]\nExisting routes in this area (do NOT recreate; extend or reuse):\n- POST /billing/charge → src/billing.ts:3\nTeam conventions for this repo (follow them):\n- Validate billing requests before charging.",
+        "injectedPatternIds": [
+          "billing"
+        ],
+        "zones": [
+          "src/billing.ts"
+        ]
+      }
+    },
+    {
+      "name": "french-context",
+      "result": null
+    },
+    {
+      "name": "empty-memory",
+      "result": null
+    },
+    {
+      "name": "duplicate-rule",
+      "result": {
+        "text": "[Kurtel memory — auto-injected, relevant to this task only]\nExisting routes in this area (do NOT recreate; extend or reuse):\n- POST /billing/charge → src/billing.ts:3\nTeam conventions for this repo (follow them):\n- Validate billing requests before charging.",
+        "injectedPatternIds": [
+          "billing"
+        ],
+        "zones": [
+          "src/billing.ts"
+        ]
+      }
+    },
+    {
+      "name": "pinned-rule",
+      "result": {
+        "text": "[Kurtel memory — auto-injected, relevant to this task only]\nPinned conventions (always apply):\n- Never log payment credentials.",
+        "injectedPatternIds": [
+          "pinned"
+        ],
+        "zones": []
+      }
+    },
+    {
+      "name": "low-fitness",
+      "result": null
+    }
+  ],
+  "impact": {
+    "target": "src/billing.ts",
+    "kind": "file",
+    "direct": 1,
+    "transitive": 1,
+    "layers": [
+      {
+        "depth": 1,
+        "files": [
+          "src/api.ts"
+        ]
+      }
+    ],
+    "symbols": [
+      {
+        "symbol": "src/api.ts::invoice",
+        "depth": 1,
+        "via": "src/billing.ts::chargeCustomer"
+      }
+    ],
+    "affectedRoutes": [],
+    "truncated": false
+  }
+}

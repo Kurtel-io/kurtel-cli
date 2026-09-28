@@ -12,20 +12,18 @@ const wordmark = [
 
 export function banner(): string {
   const art = wordmark.map((l) => c.indigoBold(l)).join("\n");
-  const tag = c.gray("  self-improving coding agents in the cloud");
+  const tag = c.gray("  codebase graph and team memory");
   const ver = c.dim(`  v${getVersion()}`);
   return `\n${art}\n${tag}${ver}\n`;
 }
 
-export function welcomeBox(cwd: string, model: string): string {
+export function welcomeBox(cwd: string): string {
   const lines = [
     `${c.indigo(symbols.arrow)} ${c.bold("Welcome to Kurtel")} ${c.dim("(preview)")}`,
     "",
     `${c.gray("cwd")}    ${c.white(cwd)}`,
-    `${c.gray("engine")} ${c.white(model)}`,
-    `${c.gray("status")} ${c.yellow("● not connected")} ${c.dim("— commands are stubs for now")}`,
     "",
-    `${c.dim("Type a task to launch an agent, or")} ${c.indigo("/help")} ${c.dim("for commands.")}`,
+    `${c.dim("Explore your graph and memory with")} ${c.indigo("/help")} ${c.dim("for commands.")}`,
     `${c.dim("Exit with")} ${c.indigo("/exit")} ${c.dim("or Ctrl+D.")}`,
   ];
   return box(lines, { borderColor: c.indigo, padding: 1 });

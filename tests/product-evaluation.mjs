@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import { verifyEdit } from '../eval/product-suite.mjs';
+const original = `import Stripe from 'stripe'\nexport const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {apiVersion: 'fixture'})\nexport const PLANS = {prototype:{priceId:process.env.STRIPE_PRICE_PROTOTYPE!,price:19,overagePerHour:2.50},builder:{priceId:process.env.STRIPE_PRICE_BUILDER!,price:49,overagePerHour: 2.00},scale:{priceId:process.env.STRIPE_PRICE_SCALE!,price:99,overagePerHour:1.50}} as const`;
+const edit = { file: 'lib/stripe.ts', old_text: 'overagePerHour: 2.00', new_text: 'overagePerHour: 2.25' };
+assert(verifyEdit(original, [edit]).passed);
+assert(verifyEdit(original.replace(/\n/g, '\r\n'), [{file:'lib/stripe.ts', old_text: original, new_text: original.replace('overagePerHour: 2.00', 'overagePerHour: 2.25')}]).passed, 'LF proposal applies to CRLF source');
+assert(!verifyEdit(original, [{ ...edit, file: '../lib/stripe.ts' }]).passed);
+assert(!verifyEdit(original, [{ ...edit, new_text: 'overagePerHour: 0' }]).passed);
+assert(!verifyEdit(original, [{ ...edit, old_text: 'not present' }]).passed);
+assert(!verifyEdit(original, [{ ...edit, new_text: 'overagePerHour: 2.25' }, { file: 'lib/stripe.ts', old_text: 'price:49', new_text: 'price:1' }]).passed);
+assert(!verifyEdit(original, [{ ...edit, new_text: 'overagePerHour: 2.25' }, { file: 'lib/stripe.ts', old_text: 'process.env.STRIPE_PRICE_BUILDER!', new_text: "'hardcoded'" }]).passed);
+assert(!verifyEdit(original, []).passed);
+assert(!verifyEdit(original, [null]).passed);
+console.log('PASS: product benchmark checks reject wrong rates, unrelated price changes, hardcoded IDs, invalid targets and missing patches.');

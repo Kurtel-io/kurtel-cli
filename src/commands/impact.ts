@@ -1,6 +1,7 @@
 import { c, symbols } from "../ui/colors.js";
-import { repoRoot, loadIndex } from "../memory/store.js";
-import { resolveTarget, computeImpact, renderImpactForAgent } from "../memory/impact.js";
+import { repoRoot } from "../repository/git.js";
+import { loadIndex } from "../storage/graph-index.js";
+import { resolveTarget, computeImpact, renderImpactForAgent } from "../graph/impact.js";
 
 export async function impactCommand(
   target: string | undefined,

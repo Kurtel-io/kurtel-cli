@@ -8,8 +8,6 @@ import {
 } from "node:fs";
 
 export interface KurtelConfig {
-  engine: string;
-  defaultBranch: string;
   loggedIn: boolean;
   account?: string;
   organization?: string;
@@ -17,15 +15,12 @@ export interface KurtelConfig {
   [key: string]: unknown;
 }
 
-// Where the CLI talks to. Override with KURTEL_API_URL for local dev, e.g.
-//   KURTEL_API_URL=http://localhost:3000 kurtel login
+// KURTEL_API_URL, then "apiUrl" in the config, then kurtel.io.
 export function apiUrl(): string {
   const raw =
-    process.env.KURTEL_API_URL ??              // 1. variable d'env (override)
-    (loadConfig().apiUrl as string | undefined) ?? // 2. clé "apiUrl" du config local
-    "https://www.kurtel.io";                // 3. valeur par défaut codée en dur
-  // On retire le(s) slash(es) final(aux): les chemins commencent par "/", sinon on
-  // construirait "https://host//api/…" (double slash → 404 possible côté Next/Vercel).
+    process.env.KURTEL_API_URL ??
+    (loadConfig().apiUrl as string | undefined) ??
+    "https://www.kurtel.io";
   return raw.replace(/\/+$/, "");
 }
 
@@ -55,8 +50,6 @@ const DIR = join(homedir(), ".kurtel");
 const FILE = join(DIR, "config.json");
 
 const DEFAULTS: KurtelConfig = {
-  engine: "kurtel-sota (codex + claude-code)",
-  defaultBranch: "main",
   loggedIn: false,
 };
 

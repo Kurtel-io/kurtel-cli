@@ -2,16 +2,10 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { c } from "./colors.js";
 
-// Prompts interactifs minimaux (zéro dépendance, sur node:readline). Toujours
-// gardés par isInteractive(): hors TTY (pipe, CI, terminal non-interactif), on
-// NE prompte JAMAIS — l'appelant retombe sur des défauts pour ne pas bloquer.
-
-/** Interactif seulement si stdin ET stdout sont des TTY. */
 export function isInteractive(): boolean {
   return !!process.stdin.isTTY && !!process.stdout.isTTY;
 }
 
-/** Question texte libre avec valeur par défaut (Entrée = défaut). */
 export async function ask(question: string, def?: string): Promise<string> {
   const rl = createInterface({ input, output });
   try {
@@ -23,7 +17,6 @@ export async function ask(question: string, def?: string): Promise<string> {
   }
 }
 
-/** Choix dans une liste numérotée. Renvoie la valeur choisie (défaut sur entrée vide). */
 export async function select(
   question: string,
   choices: string[],
@@ -37,7 +30,7 @@ export async function select(
       output.write(`  ${marker} ${c.dim(String(i + 1))} ${ch}\n`);
     });
     const raw = (
-      await rl.question(`  ${c.dim(`[1-${choices.length}, défaut ${defaultIndex + 1}]`)} `)
+      await rl.question(`  ${c.dim(`[1-${choices.length}, default ${defaultIndex + 1}]`)} `)
     ).trim();
     if (!raw) return choices[defaultIndex];
     const n = Number.parseInt(raw, 10);

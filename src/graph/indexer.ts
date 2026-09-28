@@ -1,0 +1,399 @@
+import { buildResolver } from "./resolver.js";
+import { readFileSync, readdirSync, lstatSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { join, relative, extname } from "node:path";
+import type { CodebaseIndex, ModuleNode, RouteEntry } from "../domain/types.js";
+import { repoFullName, currentBranch, headCommit } from "../repository/git.js";
+import { extractFileAst, nextRouteFor } from "./parser.js";
+
+const CODE_EXT = new Set([".ts", ".mts", ".cts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".java", ".go", ".rs", ".cs"]);
+
+const IGNORE_DIRS = new Set([
+  "node_modules", ".git", "dist", "build", "out", ".next", ".nuxt", "coverage",
+  "vendor", "__pycache__", ".venv", "venv", ".kurtel", ".claude", ".idea", ".vscode",
+]);
+
+const IGNORE_FILES = /\.(min\.js|d\.ts|test\.[jt]sx?|spec\.[jt]sx?|stories\.[jt]sx?)$|(^|\/)(conftest|setup)\.py$/;
+
+import type { FileFacts } from "../domain/types.js";
+
+interface RoutePattern {
+  re: RegExp;
+  framework: string;
+  method: (m: RegExpMatchArray) => string;
+  path: (m: RegExpMatchArray) => string;
+}
+
+// Per-language patterns, never mixed (otherwise Python's `@app.get(...)` would also match the Express one).
+const JS_ROUTE_PATTERNS: RoutePattern[] = [
+  {
+    re: /\b(?:app|router|server|api|fastify)\s*\.\s*(get|post|put|patch|delete|head|options|all)\s*\(\s*["'`]([^"'`]+)["'`]/g,
+    framework: "express-like",
+    method: (m) => m[1].toUpperCase(),
+    path: (m) => m[2],
+  },
+  {
+    re: /@(Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*(?:["'`]([^"'`]*)["'`])?\s*\)/g,
+    framework: "nest",
+    method: (m) => m[1].toUpperCase(),
+    path: (m) => m[2] ?? "",
+  },
+];
+
+const PY_ROUTE_PATTERNS: RoutePattern[] = [
+  {
+    re: /@\s*[\w.]+\.(get|post|put|patch|delete|route)\s*\(\s*["']([^"']+)["']/g,
+    framework: "python",
+    method: (m) => (m[1] === "route" ? "*" : m[1].toUpperCase()),
+    path: (m) => m[2],
+  },
+];
+
+const JS_KEYWORDS = new Set([
+  "if", "for", "while", "switch", "catch", "return", "function", "new", "typeof",
+  "await", "async", "import", "export", "require", "console", "constructor",
+  "super", "this", "throw", "delete", "void", "in", "of", "do", "else", "try",
+]);
+const PY_KEYWORDS = new Set([
+  "if", "for", "while", "return", "print", "len", "range", "str", "int", "dict",
+  "list", "set", "tuple", "type", "isinstance", "super", "open", "enumerate",
+]);
+
+function lineOf(src: string, index: number): number {
+  let n = 1;
+  for (let i = 0; i < index; i++) if (src.charCodeAt(i) === 10) n++;
+  return n;
+}
+
+function extractFile(root: string, rel: string, src: string): FileFacts {
+  const lines = src.split("\n");
+  const facts: FileFacts = {
+    rel, loc: lines.length, exports: [], importSpecs: [], routes: [],
+    defs: [], namedImports: {}, rawCalls: [],
+  };
+  const ext = extname(rel);
+  const isPy = ext === ".py";
+
+  if (isPy) {
+    for (const m of src.matchAll(/^\s*(?:from\s+([\w.]+)\s+import\s+([\w ,]+)|import\s+([\w.]+))/gm)) {
+      facts.importSpecs.push(m[1] ?? m[3]);
+      if (m[1] && m[2]) {
+        for (const name of m[2].split(",").map((s) => s.trim().split(/\s+as\s+/)[0])) {
+          if (/^\w+$/.test(name)) facts.namedImports[name] = m[1];
+        }
+      }
+    }
+    for (const m of src.matchAll(/^(?:\s*)(?:async\s+)?def\s+(\w+)/gm)) {
+      facts.exports.push(m[1]);
+      facts.defs.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
+    }
+    for (const m of src.matchAll(/^class\s+(\w+)/gm)) facts.exports.push(m[1]);
+  } else {
+    for (const m of src.matchAll(/import\s+(?:type\s+)?(?:(\w+)\s*,?\s*)?(?:{([^}]*)})?\s*from\s+["']([^"']+)["']|\brequire\s*\(\s*["']([^"']+)["']\s*\)/g)) {
+      const spec = m[3] ?? m[4];
+      if (!spec) continue;
+      facts.importSpecs.push(spec);
+      if (m[1]) facts.namedImports[m[1]] = spec;
+      if (m[2]) {
+        for (const part of m[2].split(",")) {
+          const name = part.trim().split(/\s+as\s+/).pop()?.trim();
+          if (name && /^\w+$/.test(name)) facts.namedImports[name] = spec;
+        }
+      }
+    }
+    for (const m of src.matchAll(/\b(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)/g)) {
+      facts.defs.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
+    }
+    for (const m of src.matchAll(/\b(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::\s*[^=]+)?=>/g)) {
+      facts.defs.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
+    }
+    for (const m of src.matchAll(/^\s{2,}(?:public\s+|private\s+|protected\s+|static\s+)*(?:async\s+)?(\w+)\s*\([^)]*\)\s*(?::\s*[\w<>[\]| .]+)?\s*{/gm)) {
+      if (!JS_KEYWORDS.has(m[1])) facts.defs.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
+    }
+    for (const m of src.matchAll(/\bexport\s+(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\s+(\w+)/g)) {
+      facts.exports.push(m[1]);
+    }
+  }
+
+  // Deduplicate by name: keep the first occurrence (the highest after sorting).
+  const seen = new Set<string>();
+  facts.defs = facts.defs
+    .sort((a, b) => a.line - b.line)
+    .filter((d) => (seen.has(d.name) ? false : (seen.add(d.name), true)))
+    ;
+
+  const kw = isPy ? PY_KEYWORDS : JS_KEYWORDS;
+  let count = 0;
+  for (const m of src.matchAll(/(?<![\w.])([A-Za-z_]\w{2,})\s*\(/g)) {
+    if (kw.has(m[1])) continue;
+    facts.rawCalls.push({ name: m[1], line: lineOf(src, m.index ?? 0) });
+    if (++count >= 800) break;
+  }
+  // "Prefix.method(" gives the candidate "Prefix."; the trailing dot marks a qualified call (resolved afterwards).
+  for (const m of src.matchAll(/(?<![\w.])([A-Z]\w{2,})\.\w+\s*\(/g)) {
+    if (kw.has(m[1])) continue;
+    facts.rawCalls.push({ name: m[1] + ".", line: lineOf(src, m.index ?? 0) });
+    if (++count >= 1000) break;
+  }
+  facts.rawCalls.sort((a, b) => a.line - b.line);
+
+  const routePatterns = ext === ".py" ? PY_ROUTE_PATTERNS : JS_ROUTE_PATTERNS;
+  for (const p of routePatterns) {
+    for (const m of src.matchAll(p.re)) {
+      const upto = src.slice(0, m.index ?? 0);
+      facts.routes.push({
+        method: p.method(m),
+        path: p.path(m),
+        file: rel,
+        line: upto.split("\n").length,
+        framework: p.framework,
+      });
+    }
+  }
+
+  return facts;
+}
+
+function resolveImports(all: Map<string, FileFacts>, resolve: (rel: string, spec: string) => string | undefined): Map<string, string[]> {
+  const resolved = new Map<string, string[]>();
+  for (const [rel, facts] of all) {
+    const targets: string[] = [];
+    for (const spec of facts.importSpecs) {
+      const candidate = resolve(rel, spec);
+      if (candidate && candidate !== rel) targets.push(candidate);
+    }
+    resolved.set(rel, [...new Set(targets)]);
+  }
+  return resolved;
+}
+
+
+function buildSymbols(
+  all: Map<string, FileFacts>,
+  resolve: (rel: string, spec: string) => string | undefined
+): Map<string, { name: string; line: number; calls: string[] }[]> {
+  const defNames = new Map<string, Set<string>>();
+  const exportNames = new Map<string, Set<string>>();
+  for (const [rel, f] of all) {
+    defNames.set(rel, new Set(f.defs.map((d) => d.name)));
+    exportNames.set(rel, new Set(f.exports));
+  }
+
+  const out = new Map<string, { name: string; line: number; calls: string[] }[]>();
+  for (const [rel, f] of all) {
+    const locals = defNames.get(rel)!;
+    const symbols = f.defs.map((d) => ({ ...d, calls: [] as string[] }));
+    // Pseudo-symbol for calls outside functions (inline route handlers, module init).
+    const topLevel = { name: "(module)", line: 0, calls: [] as string[] };
+
+    const resolveCall = (raw: string): string | null => {
+      const qualified = raw.endsWith(".");
+      const name = qualified ? raw.slice(0, -1) : raw;
+      if (!qualified && locals.has(name)) return `${rel}::${name}`;
+      const entry = f.namedImports[name];
+      if (entry) {
+        const spec = typeof entry === "string" ? entry : entry.spec;
+        const orig = typeof entry === "string" ? name : entry.orig;
+        const file = resolve(rel, spec);
+        if (file && file !== rel && (defNames.get(file)?.has(orig) || exportNames.get(file)?.has(orig))) {
+          return `${file}::${orig}`;
+        }
+      }
+      return null;
+    };
+
+    const byLine = new Map(symbols.map((s) => [s.line, s]));
+    for (const call of f.rawCalls) {
+      let caller: { name: string; line: number; calls: string[] } = topLevel;
+      if (call.owner !== undefined) {
+        caller = call.owner === 0 ? topLevel : (byLine.get(call.owner) ?? topLevel);
+      } else {
+        for (const s of symbols) {
+          if (s.line <= call.line) caller = s;
+          else break;
+        }
+      }
+      if (caller.name === call.name) continue;
+      const target = resolveCall(call.name);
+      if (target && target !== `${rel}::${caller.name}` && !caller.calls.includes(target)) {
+        caller.calls.push(target);
+      }
+    }
+
+    out.set(rel, topLevel.calls.length ? [topLevel, ...symbols] : symbols);
+  }
+  return out;
+}
+
+/** Paths Git ignores (generated output, copies, caches) are not project code. Nothing is ignored outside a work tree. */
+function gitIgnored(root: string): (rel: string) => boolean {
+  let listed: string[];
+  try {
+    listed = execFileSync("git", ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], { cwd: root, stdio: ["ignore", "pipe", "ignore"], windowsHide: true, maxBuffer: 64 * 1024 * 1024 }).toString().split("\0").filter(Boolean);
+  } catch { return () => false; }
+  const dirs = listed.filter(p => p.endsWith("/")), files = new Set(listed.filter(p => !p.endsWith("/")));
+  return rel => files.has(rel) || dirs.some(d => rel.startsWith(d));
+}
+
+function* walk(dir: string, root: string, ignored: (rel: string) => boolean = gitIgnored(root)): Generator<string> {
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { return; }
+  for (const name of entries) {
+    if (name.startsWith(".") && name !== ".") continue;
+    const full = join(dir, name);
+    let st;
+    try { st = lstatSync(full); } catch { continue; }
+    const rel = relative(root, full).replace(/\\/g, "/");
+    if (st.isDirectory()) {
+      if (!IGNORE_DIRS.has(name) && !ignored(rel + "/")) yield* walk(full, root, ignored);
+    } else if (st.isFile() && st.size <= 16_000_000) {
+      if (CODE_EXT.has(extname(name)) && !IGNORE_FILES.test(rel) && !ignored(rel)) yield rel;
+    }
+  }
+}
+
+/** Indexable code files (the exact filters of buildIndex), to detect drift. */
+export function listCodeFiles(root: string): string[] {
+  return [...walk(root, root)].sort();
+}
+
+export async function buildIndex(root: string, onProgress?: (n: number) => void): Promise<CodebaseIndex> {
+  const files = new Map<string, FileFacts>();
+  let n = 0;
+  let regexFallbacks = 0;
+  for (const rel of walk(root, root)) {
+    try {
+      const src = readFileSync(join(root, rel), "utf8");
+      const ast = await extractFileAst(rel, src, extname(rel));
+      if (ast) {
+        files.set(rel, ast);
+      } else {
+        files.set(rel, extractFile(root, rel, src));
+        regexFallbacks++;
+      }
+      const next = nextRouteFor(rel);
+      if (next) files.get(rel)!.routes.push(next);
+      if (onProgress && ++n % 50 === 0) onProgress(n);
+    } catch { /* unreadable binary */ }
+  }
+
+  const resolve = buildResolver(root, files.keys());
+  const imports = resolveImports(files, resolve);
+  const symbolMap = buildSymbols(files, resolve);
+  const inDegree = new Map<string, number>();
+  for (const targets of imports.values()) {
+    for (const t of targets) inDegree.set(t, (inDegree.get(t) ?? 0) + 1);
+  }
+
+  const modules: ModuleNode[] = [...files.entries()]
+    .map(([rel, f]) => {
+      const out = imports.get(rel) ?? [];
+      return {
+        id: rel,
+        exports: f.exports.slice(0, 30),
+        imports: out,
+        loc: f.loc,
+        degree: out.length + (inDegree.get(rel) ?? 0),
+        symbols: symbolMap.get(rel) ?? [],
+      };
+    })
+    .sort((a, b) => a.id.localeCompare(b.id)); // stable sort: deterministic output
+
+  const god_nodes = [...modules]
+    .sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id))
+    .slice(0, 10)
+    .filter((m) => m.degree >= 5)
+    .map((m) => ({ id: m.id, degree: m.degree }));
+
+  const domainMap = new Map<string, { files: number; loc: number }>();
+  for (const m of modules) {
+    const top = m.id.includes("/") ? m.id.split("/")[0] : "(root)";
+    const d = domainMap.get(top) ?? { files: 0, loc: 0 };
+    d.files += 1; d.loc += m.loc;
+    domainMap.set(top, d);
+  }
+  const domains = [...domainMap.entries()]
+    .map(([name, d]) => ({ name, ...d }))
+    .sort((a, b) => b.loc - a.loc);
+
+  const routes = [...files.values()].flatMap((f) => f.routes)
+    .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
+
+  return {
+    version: 1,
+    parser: { engine: regexFallbacks === files.size ? "regex" : "tree-sitter", regex_fallbacks: regexFallbacks },
+    repo: repoFullName(root),
+    branch: currentBranch(root),
+    files_indexed: files.size,
+    routes,
+    modules,
+    god_nodes,
+    domains,
+  };
+}
+
+export function renderReport(index: CodebaseIndex, root: string): string {
+  // Commit and date computed on the fly, not stored in the index (no churn).
+  const lines: string[] = [];
+  lines.push(`# Kurtel — Architecture Report`);
+  lines.push(``);
+  lines.push(`Repo **${index.repo}** · ${index.files_indexed} files indexed · commit \`${headCommit(root).slice(0, 8)}\` · ${new Date().toISOString()}`);
+  lines.push(``);
+
+  if (index.parser) {
+    lines.push(`Parser: ${index.parser.engine}; regex fallbacks: ${index.parser.regex_fallbacks}.`);
+    lines.push(``);
+  }
+  lines.push(`## Domains`);
+  for (const d of index.domains.slice(0, 12)) {
+    lines.push(`- **${d.name}** — ${d.files} files, ${d.loc.toLocaleString()} LOC`);
+  }
+  lines.push(``);
+
+  if (index.god_nodes.length) {
+    lines.push(`## God nodes (high-coupling hotspots)`);
+    lines.push(`These modules concentrate the most connections; changes here have the widest blast radius.`);
+    for (const g of index.god_nodes) {
+      lines.push(`- \`${g.id}\` — **${g.degree} edges**`);
+    }
+    lines.push(``);
+  }
+
+  lines.push(`## Route inventory (${index.routes.length})`);
+  lines.push(`The agent receives this inventory before creating any endpoint — duplicates get flagged.`);
+  const byFw = new Map<string, RouteEntry[]>();
+  for (const r of index.routes) {
+    const arr = byFw.get(r.framework) ?? [];
+    arr.push(r); byFw.set(r.framework, arr);
+  }
+  for (const [fw, rs] of byFw) {
+    lines.push(``);
+    lines.push(`### ${fw}`);
+    for (const r of rs.slice(0, 80)) {
+      lines.push(`- \`${r.method.padEnd(6)} ${r.path}\` → ${r.file}:${r.line}`);
+    }
+    if (rs.length > 80) lines.push(`- … and ${rs.length - 80} more`);
+  }
+  lines.push(``);
+  return lines.join("\n");
+}
+
+/** Rough similarity between two route paths (shared segments, normalized params). */
+function routeSimilarity(a: string, b: string): number {
+  const norm = (p: string) => p.replace(/:(\w+)|\{(\w+)\}|\[(\w+)\]/g, ":p").toLowerCase()
+    .split("/").filter(Boolean);
+  const sa = norm(a), sb = norm(b);
+  if (!sa.length || !sb.length) return 0;
+  let shared = 0;
+  for (let i = 0; i < Math.min(sa.length, sb.length); i++) if (sa[i] === sb[i]) shared++;
+  return (2 * shared) / (sa.length + sb.length);
+}
+
+export function findSimilarRoutes(index: CodebaseIndex, path: string, threshold = 0.6): RouteEntry[] {
+  return index.routes
+    .map((r) => ({ r, s: routeSimilarity(r.path, path) }))
+    .filter((x) => x.s >= threshold)
+    .sort((a, b) => b.s - a.s)
+    .slice(0, 5)
+    .map((x) => x.r);
+}
