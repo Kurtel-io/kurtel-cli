@@ -10,6 +10,8 @@ import { z } from "zod";
 import { getVersion } from "../../lib/version.js";
 import { kurtelEnabled, repoActivated, memoryEnabled } from "../../storage/state.js";
 import { loadIndex, indexGeneratedAt } from "../../storage/graph-index.js";
+import { accessGated, activeAccess, checkAccess } from "../../storage/access.js";
+import { ensureWatcher } from "../../runtime/reindex.js";
 import { readKnowledge } from "../../storage/knowledge.js";
 import { compactContext } from "../../context/compact.js";
 import { countTokens } from "../../context/budget.js";
@@ -140,5 +142,9 @@ export function createKurtelMcp(options: McpOptions) {
 
 export async function serveMcp(options: McpOptions) {
   const server = createKurtelMcp(options);
+  // As the Claude Code session start does: check access if unknown, then keep the code map current.
+  const root = realpathSync.native(resolve(options.root));
+  try { if (accessGated() && !activeAccess(root)) await checkAccess(root, { timeoutMs: 1500 }); } catch { /* Offline: kept answer only. */ }
+  ensureWatcher(root);
   await server.connect(new StdioServerTransport(process.stdin, process.stdout, { maxBufferSize: 1024 * 1024 }));
 }

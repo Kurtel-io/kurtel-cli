@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import type { CodebaseIndex } from "../domain/types.js";
 import { indexPath } from "./paths.js";
 import { writeJSON } from "./json.js";
+import { ensureKurtelIgnored } from "./journal.js";
 
 export function indexGeneratedAt(root: string): string | null {
   try {
@@ -23,6 +24,7 @@ export function loadIndex(root: string): CodebaseIndex | null {
 
 export function saveIndex(root: string, index: CodebaseIndex): void {
   writeJSON(indexPath(root), index);
+  ensureKurtelIgnored(root);
 }
 
 /** Cheap identity of the saved index (size + mtime), so prompts never hash the whole graph. */

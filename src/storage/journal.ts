@@ -4,15 +4,17 @@ import { injectionLogPath, injectedIdsPath } from "./paths.js";
 
 const INJECTION_LOG_MAX_BYTES = 1_500_000;
 
-function ensureInjectionLogIgnored(root: string): void {
+/** Keeps Kurtel's machine-specific files out of Git: the code map, the report and the injection journal. */
+export function ensureKurtelIgnored(root: string): void {
   const gi = join(root, ".kurtel", ".gitignore");
   try {
-    const want = ["injection-log.md", "injection-log.old.md", "injected.jsonl"];
+    const want = ["index.json", "REPORT.md", "injection-log.md", "injection-log.old.md", "injected.jsonl"];
     const cur = existsSync(gi) ? readFileSync(gi, "utf8") : "";
     const have = new Set(cur.split(/\r?\n/).map((l) => l.trim()));
     const missing = want.filter((w) => !have.has(w));
     if (!missing.length) return;
-    const header = cur ? "" : "# Kurtel local injection journal — machine-specific, never commit\n";
+    mkdirSync(join(root, ".kurtel"), { recursive: true });
+    const header = cur ? "" : "# Built on each machine by Kurtel: never commit\n";
     appendFileSync(gi, header + missing.join("\n") + "\n", "utf8");
   } catch { /* Best effort. */ }
 }
@@ -24,7 +26,7 @@ export function appendInjectionLog(root: string, entry: string): void {
     const file = injectionLogPath(root);
     const dir = join(file, "..");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    if (!existsSync(file)) ensureInjectionLogIgnored(root); // once, when the file is created
+    if (!existsSync(file)) ensureKurtelIgnored(root); // once, when the file is created
     try {
       if (statSync(file).size > INJECTION_LOG_MAX_BYTES) {
         const old = file.replace(/\.md$/, ".old.md");

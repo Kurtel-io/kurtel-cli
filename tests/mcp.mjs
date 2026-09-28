@@ -15,7 +15,13 @@ const { activateRepo, setKurtelEnabled, setMemoryEnabled } = await import('../di
 const { saveIndex } = await import('../dist/storage/graph-index.js');
 const { readKnowledge, knowledgePath, appendKnowledge, emptyBatch } = await import('../dist/storage/knowledge.js');
 const { countTokens } = await import('../dist/context/budget.js');
+const { watcherRunning } = await import('../dist/runtime/reindex.js');
+const { execFileSync } = await import('node:child_process');
 activateRepo(root);
+// Real files matching the fixture index: the watcher started with the server rebuilds the map from them.
+mkdirSync(join(root, 'src'));
+writeFileSync(join(root, 'src', 'billing.ts'), 'export function chargeCustomer() {\n  return 1;\n}\n');
+writeFileSync(join(root, 'src', 'checkout.ts'), "import { chargeCustomer } from './billing';\nexport const total = chargeCustomer();\n");
 saveIndex(root, { version: 1, repo: 'fixture', branch: 'main', files_indexed: 2, modules: [{ id: 'src/billing.ts', symbols: [{ name: 'chargeCustomer', line: 1, calls: [] }], imports: [], exports: ['chargeCustomer'] }, { id: 'src/checkout.ts', symbols: [], imports: ['src/billing.ts'], exports: [] }], routes: [], god_nodes: [], domains: [] });
 const now = new Date().toISOString();
 appendKnowledge(root, () => ({ ...emptyBatch(), sources: [{ id: 'proof', kind: 'document', reference: 'decision:billing', revision: '1', recorded_at: now, content: 'PRIVATE TRANSCRIPT' }], versions: [{ id: 'decision-v1', knowledge_id: 'decision', version: 1, previous_version_id: null, kind: 'decision', state: 'active', content: 'Keep billing validation centralized.', zones: ['src'], source_ids: ['proof'], event_ids: [], recorded_at: now, valid_from: null, valid_until: null, legacy_pattern_id: null, legacy_score: null }], relations: [{ id: 'reason', kind: 'motivated_by', from: { type: 'version', id: 'decision-v1' }, to: { type: 'source', id: 'proof' }, source_ids: ['proof'], recorded_at: now, valid_from: null, valid_until: null }] }));
@@ -33,6 +39,10 @@ try {
   assert(!existsSync(join(inactive, '.kurtel')));
 } finally { await client.close(); }
 client = await connect(root);
+// Codex has no session hook: the MCP server itself starts the watcher that keeps the code map current.
+for (let i = 0; i < 50 && !watcherRunning(root); i++) await new Promise(r => setTimeout(r, 100));
+assert(watcherRunning(root), 'watcher started by the MCP server');
+assert(existsSync(join(root, '.kurtel', '.gitignore')) && readFileSync(join(root, '.kurtel', '.gitignore'), 'utf8').includes('index.json'), 'code map kept out of Git');
 try {
   assert.equal((await client.listTools()).tools.length, 7);
   assert((await client.listTools()).tools.every(t => t.annotations.readOnlyHint));
@@ -85,4 +95,5 @@ try {
   assert.deepEqual((await client.listTools()).tools.map(t => t.name).sort(), ['get_context', 'get_impact', 'get_status']);
   assert.match(text(await client.callTool({ name: 'get_context', arguments: { prompt: 'inspect src/billing.ts', phase: 'before_edit' } })), /src\/billing.ts/);
 } finally { await client.close(); }
-console.log('PASS: real MCP stdio lifecycle, strict inputs, fixed root, activation, kill switch, graph-only isolation, bounded context, sourced history without transcripts and idempotent proposed writes.');
+execFileSync(process.execPath, [cli, 'watch', 'stop'], { cwd: root, env: process.env, stdio: 'ignore' });
+console.log('PASS: real MCP stdio lifecycle, watcher started for Codex, code map ignored by Git, strict inputs, fixed root, activation, kill switch, graph-only isolation, bounded context, sourced history without transcripts and idempotent proposed writes.');
