@@ -1,9 +1,14 @@
 import type { CodebaseIndex } from '../domain/types.js';
+import { foldAccents } from './embeddings.js';
+import { requestWords } from './translate.js';
+
+/** Request words → code words they translate to, each mapped to its request word. */
+export type Translator = (words: string[], vocabulary: Set<string>) => Map<string, string>;
 
 // Query scaffolding and common directory names are not evidence of code relevance.
 const noise = new Set(('type script app api src scripts lib core index route routes file files source sources code implementation function functions string number boolean facts return only containing identify explain explanation current existing find locate default module modules import imports imported direct directly handler handlers changes change before after which what where when how from into with without this that these those then than the and for not all any its has have does do can should would could will user agent system context path lines line name names test tests true false read write modify anything').split(' '));
 function terms(text: string): string[] {
-  const parts = text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
+  const parts = foldAccents(text).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/);
   return [...new Set(parts.map(p => p.endsWith('ies') ? p.slice(0, -3) + 'y' : p.length > 4 && p.endsWith('s') ? p.slice(0, -1) : p).filter(p => p.length >= 3 && !noise.has(p)))];
 }
 
@@ -13,13 +18,13 @@ export function navigationContext(index: CodebaseIndex, prompt: string): string[
 }
 
 /** Navigation lines plus the files they designate: explicit modules, or the anchored definitions (never callers or imports). */
-export function navigationScope(index: CodebaseIndex, prompt: string): { lines: string[]; files: string[] } {
+export function navigationScope(index: CodebaseIndex, prompt: string, translate?: Translator): { lines: string[]; files: string[] } {
   const files: string[] = [];
-  const lines = navigate(index, prompt, files);
+  const lines = navigate(index, prompt, files, translate);
   return { lines, files: [...new Set(files)] };
 }
 
-function navigate(index: CodebaseIndex, prompt: string, files: string[]): string[] {
+function navigate(index: CodebaseIndex, prompt: string, files: string[], translate?: Translator): string[] {
   // Output-format instructions must not act as retrieval keywords.
   const question = prompt.split(/\b(?:return|retourne[zr]?|respond|do not|ne modifie[zr]?)\b/i)[0];
   const query = terms(question);
@@ -43,6 +48,15 @@ function navigate(index: CodebaseIndex, prompt: string, files: string[]): string
   const candidates = index.modules.flatMap(m => m.symbols.filter(s => s.name !== '(module)').map(s => ({
     file: m.id, symbol: s, words: terms(s.name), pathWords: terms(m.id),
   })));
+  if (translate) {
+    // Requests in another language (or with synonyms) reach the code's own words.
+    const vocabulary = new Set(candidates.flatMap(c => [...c.words, ...c.pathWords]));
+    const primaryWords = new Set(requestWords(question.split(/[.!?](?:\s|$)/)[0]));
+    for (const [word, source] of translate(requestWords(question), vocabulary)) {
+      if (!query.includes(word)) query.push(word);
+      if (primaryWords.has(source) && !primary.includes(word)) primary.push(word);
+    }
+  }
   const frequency = new Map<string, number>();
   for (const c of candidates) for (const word of c.words) frequency.set(word, (frequency.get(word) ?? 0) + 1);
   const ranked = candidates.map(c => {

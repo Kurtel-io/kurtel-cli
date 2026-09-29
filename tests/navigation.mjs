@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { buildIndex } from '../dist/graph/indexer.js';
-import { navigationContext } from '../dist/context/navigation.js';
+import { navigationContext, navigationScope } from '../dist/context/navigation.js';
+import { codeTranslations } from '../dist/context/translate.js';
 import { contentFingerprint } from '../dist/runtime/reindex.js';
 
 const base = resolve(tmpdir());
@@ -32,12 +33,19 @@ try {
   assert.match(query, /inspectCacheDrift/);
   assert.match(query, /caller reconcileCache/);
   assert.deepEqual(navigationContext(index, 'Discuss lunar geology. Return files and functions.'), [], 'unrelated task must stay silent');
+  mkdirSync(join(root, 'graph'));
+  writeFileSync(join(root, 'graph/memory.ts'), 'export function rebuildMemoryGraph() { return 1; }');
+  const translated = await buildIndex(root);
+  const translate = (words, vocabulary) => codeTranslations(null, words, vocabulary);
+  assert.deepEqual(navigationScope(translated, 'Le graphe de la mémoire est faux.').lines, [], 'without translation a French request stays lexical');
+  assert.match(navigationScope(translated, 'Le graphe de la mémoire est faux.', translate).lines.join('\n'), /rebuildMemoryGraph → graph\/memory.ts/, 'French request reaches English code');
+  assert.deepEqual(navigationScope(translated, 'Discute de la géologie lunaire.', translate).lines, [], 'translation adds nothing the code does not contain');
   const fp = contentFingerprint(root);
   writeFileSync(join(root, 'config/base.json'), '{"compilerOptions":{"paths":{"@/*":["../missing/*"]}}}');
   assert.notEqual(contentFingerprint(root), fp, 'inherited alias edits invalidate freshness');
   const rebuilt = await buildIndex(root);
   assert.deepEqual(rebuilt.modules.find(m => m.id === 'checkout.ts').imports, []);
-  console.log('PASS: >1MB code, late symbols/calls, JSONC inherited/exact/wildcard aliases, dependency context, abstention and config freshness.');
+  console.log('PASS: >1MB code, late symbols/calls, JSONC inherited/exact/wildcard aliases, dependency context, abstention, cross-language requests and config freshness.');
 } finally {
   assert.equal(dirname(root), base);
   rmSync(root, {recursive:true, force:true});

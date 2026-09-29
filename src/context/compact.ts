@@ -10,6 +10,7 @@ import { kurtelEnabled, memoryEnabled, repoActivated } from "../storage/state.js
 import { tokenize } from "./tokenize.js";
 import { embedTokens, cosine } from "./embeddings.js";
 import { navigationScope } from "./navigation.js";
+import { codeTranslations } from "./translate.js";
 import { resolveZones } from "./ranking.js";
 import { packContext, type ContextItem } from "./budget.js";
 import { maintenanceFacts } from "../memory/maintenance.js";
@@ -61,7 +62,7 @@ export async function compactContext(root: string, index: CodebaseIndex | null, 
   if (!repoActivated(root) || !kurtelEnabled(root) || (options.memoryOnly && !memoryEnabled(root))) return { ...packContext([], options.budget), ...inactive };
   const query = tokenize(prompt);
   const zones = index ? resolveZones(index, query) : [];
-  const navigation = index ? navigationScope(index, prompt) : { lines: [], files: [] };
+  const navigation = index ? navigationScope(index, prompt, (words, vocabulary) => codeTranslations(root, words, vocabulary)) : { lines: [], files: [] };
   // No cited path: the graph's definitions give an inferred scope.
   const paths = explicitPaths.length ? explicitPaths : navigation.files.slice(0, 5);
   const scope: ScopeSource = explicitPaths.length ? "explicit" : paths.length ? "inferred" : "none";

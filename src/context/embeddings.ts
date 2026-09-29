@@ -15,7 +15,7 @@ export function foldAccents(s: string): string {
   return s.normalize("NFD").replace(/\p{M}+/gu, "");
 }
 
-interface Table { dim: number; words: Map<string, number>; data: Int8Array }
+interface Table { dim: number; words: Map<string, number>; rows: string[]; data: Int8Array }
 
 let table: Table | null = null;
 let loadFailed = false;
@@ -36,15 +36,17 @@ function getTable(): Table | null {
     const data = new Int8Array(buf.buffer, buf.byteOffset + HEADER, count * dim);
     const lines = readFileSync(vocab, "utf8").split("\n");
     const words = new Map<string, number>();
+    const rows = new Array<string>(Math.min(count, lines.length));
     for (let i = 0; i < count && i < lines.length; i++) {
       const w = lines[i];
       if (!w) continue;
       // Accent-folded keys: queries arrive folded, so "gere" must find "gère"
       // the .vec is sorted by frequency and the more frequent word wins.
-      const k = foldAccents(w);
+      const k = /^[\x00-\x7f]*$/.test(w) ? w : foldAccents(w);
+      rows[i] = k;
       if (!words.has(k)) words.set(k, i);
     }
-    table = { dim, words, data };
+    table = { dim, words, rows, data };
     return table;
   } catch {
     loadFailed = true;
@@ -109,6 +111,27 @@ export function embedTokens(words: string[]): Float32Array | null {
 /** Vector of a text (prompt FR). */
 export function embedText(text: string): Float32Array | null {
   return embedTokens(rawWords(text));
+}
+
+/** Closest words to a vector among the `rows` most frequent words of the table, best first. */
+export function nearestWords(q: Float32Array, rows: number, limit: number, skip: (word: string) => boolean): [string, number][] {
+  const t = getTable();
+  if (!t) return [];
+  const best: [string, number][] = [];
+  const n = Math.min(rows, t.rows.length);
+  for (let r = 0; r < n; r++) {
+    const word = t.rows[r];
+    if (!word || skip(word)) continue;
+    let dot = 0;
+    const base = r * t.dim;
+    for (let i = 0; i < t.dim; i++) dot += q[i] * t.data[base + i];
+    const cos = dot / 127;
+    if (best.length === limit && cos <= best[limit - 1][1]) continue;
+    best.push([word, cos]);
+    best.sort((a, b) => b[1] - a[1]);
+    if (best.length > limit) best.pop();
+  }
+  return best;
 }
 
 /** Cosine similarity. Vectors from embedTokens are normalized, so this is a dot product. */
