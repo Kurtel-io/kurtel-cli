@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { policyFetch } from "../security/network.js";
 import type { CodebaseIndex } from "../domain/types.js";
 import type { KnowledgeStore, KnowledgeVersion } from "../domain/knowledge.js";
@@ -42,10 +44,16 @@ function firstSentence(text: string, max = 240): string {
   return sentence.length > max ? sentence.slice(0, max - 1) + "…" : sentence;
 }
 
+/** A cited path counts when it starts in the repository; "application/json" or "and/or" do not. */
+function inRepository(root: string, index: CodebaseIndex | null, path: string): boolean {
+  const top = path.split("/")[0];
+  return !!index?.modules.some(m => m.id.startsWith(top + "/")) || existsSync(join(root, top));
+}
+
 export async function compactContext(root: string, index: CodebaseIndex | null, prompt: string, options: CompactOptions = {}) {
   const mode = options.mode ?? "action";
   if (!["action", "investigation"].includes(mode)) throw new Error("Invalid context mode");
-  const explicitPaths = [...new Set(options.paths ?? (prompt.match(/(?<![\w/.:])(?:[\w@.-]+\/)+[\w.-]+/g) ?? []))].slice(0, 50);
+  const explicitPaths = [...new Set(options.paths ?? (prompt.match(/(?<![\w/.:])(?:[\w@.-]+\/)+[\w.-]+/g) ?? []).filter(p => inRepository(root, index, p)))].slice(0, 50);
   if (explicitPaths.some(p => p.startsWith("/") || p.includes("\\") || p.split("/").includes("..") || p.includes(":"))) throw new Error("Context paths must be repository-relative");
   const items: ContextItem[] = [], warnings: string[] = [], ineligible = new Set<string>();
   let unavailable = false;

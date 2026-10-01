@@ -128,6 +128,10 @@ try {
   assert.equal(result.scope, 'inferred'); assert.deepEqual(result.paths, ['src/billing.ts']);
   assert.equal(lastRequest.candidates[0].request.path_source, 'inferred');
   assert.match(result.text, /Billing validation active-one/); assert.match(result.text, /task scope inferred from the code graph/);
+  // Words joined by a slash are not paths: the scope stays the graph's.
+  resetContext(root, 'slash-words');
+  result = await compactContext(root, graph, 'Fix rounding in validateInvoiceTotals and/or return application/json', { session: 'slash-words' });
+  assert.equal(result.scope, 'inferred'); assert.deepEqual(result.paths, ['src/billing.ts']);
   // Abstention: one shared word among many is not relevance.
   const before = requests;
   result = await compactContext(root, index, 'Write a monthly billing export with totals per customer and currency');
