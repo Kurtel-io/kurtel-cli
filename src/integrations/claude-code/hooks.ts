@@ -4,7 +4,7 @@ import { kurtelEnabled, memoryEnabled, repoActivated } from "../../storage/state
 import { appendInjectionLog } from "../../storage/journal.js";
 import { compactContext } from "../../context/compact.js";
 import { deliverContext, resetContext } from "../../context/delivery.js";
-import { packContext } from "../../context/budget.js";
+import { CHOSEN_TOKENS, CONTEXT_TOKENS, HOOK_CHARACTERS, packContext } from "../../context/budget.js";
 import { recordInjection, recordToolUse } from "../../storage/usage.js";
 import { digest } from "../../storage/knowledge.js";
 import { findSimilarRoutes } from "../../graph/indexer.js";
@@ -136,12 +136,15 @@ async function hookAccess(root: string, event: string): Promise<boolean> {
   return false;
 }
 
+/** The code map, unless switched off for this process (KURTEL_NO_MAP=1, to measure memory on its own). */
+function codeMap(root: string) { return process.env.KURTEL_NO_MAP === "1" ? null : loadIndex(root); }
+
 function onSessionStart(root: string, input: HookInput): void {
   resetContext(root, input.session_id);
   try { shareInBackground(root); } catch { /* Sharing never blocks the session. */ }
   ensureWatcher(root);
 
-  const index = loadIndex(root);
+  const index = codeMap(root);
   let resume = "";
   if (memoryEnabled(root)) try { resume = consumeResume(root, input.session_id); } catch { /* Context still works without it. */ }
   if (!index && !resume) return;
@@ -149,7 +152,7 @@ function onSessionStart(root: string, input: HookInput): void {
   const bits: string[] = [];
   if (index) bits.push(`codebase index: ${index.files_indexed} files, ${index.routes.length} routes (commit ${headCommit(root).slice(0, 8)})`);
   const context = packContext([
-    { key: "summary", text: `[Kurtel active — ${bits.join(", ")}. Context is supplied per task.]`, priority: 20 },
+    { key: "summary", text: `[Kurtel active — ${bits.join(", ")}. Kurtel is a plugin the user installed in this repository: it keeps what the user says from one session to the next and supplies it with each task, quoted and dated.]`, priority: 20 },
     ...(resume ? [{ key: "resume", text: resume, priority: 80 }] : []),
   ], 2000);
   if (context.omitted.includes("resume")) context.text = packContext([{ key: "omitted", text: "Kurtel: working memory exceeds the startup budget. Run kurtel sessions resume to inspect it explicitly.", priority: 100 }], 2000).text;
@@ -161,13 +164,13 @@ async function onPrompt(root: string, input: HookInput): Promise<void> {
   const dbg = (m: string) => { if (process.env.KURTEL_DEBUG) console.error(`[kurtel hook] ${m}`); };
   if (prompt.length < 8 || prompt.startsWith("/")) { dbg(`skip: prompt too short or slash (${JSON.stringify(prompt)})`); return; }
 
-  const index = loadIndex(root);
+  const index = codeMap(root);
   dbg(`root=${root} index=${!!index}`);
   try { startCorrectionCheck(root, input.session_id); } catch (e) { dbg(`correction check not started: ${e instanceof Error ? e.message : e}`); }
   try { shareInBackground(root); } catch (e) { dbg(`sharing not started: ${e instanceof Error ? e.message : e}`); }
   const capsule = await compactContext(root, index, prompt, { budget: PROMPT_TOKENS, session: input.session_id });
   if (!kurtelEnabled(root) || !repoActivated(root)) return;
-  const delivered = deliverContext(root, input.session_id, capsule.items, capsule.revision, text => emitContext(root, "UserPromptSubmit", text, { prompt, shared: capsule.items.some(i => i.key.startsWith("team:")) }), { budget: PROMPT_TOKENS, stillValid: capsule.stillValid });
+  const delivered = deliverContext(root, input.session_id, capsule.items, capsule.revision, text => emitContext(root, "UserPromptSubmit", text, { prompt, shared: capsule.items.some(i => i.key.startsWith("team:")) }), { budget: capsule.chosen ? CHOSEN_TOKENS : PROMPT_TOKENS, characters: HOOK_CHARACTERS, stillValid: capsule.stillValid });
   recordInjection(root, input.session_id, "UserPromptSubmit", delivered.tokens, delivered.selected);
   dbg(`tokens=${delivered.tokens} scope=${capsule.scope} omitted=${delivered.omitted.length} warnings=${capsule.warnings.join("; ")}`);
 }
@@ -175,7 +178,7 @@ async function onPrompt(root: string, input: HookInput): Promise<void> {
 const ROUTE_WRITE = /\.(get|post|put|patch|delete)\s*\(\s*["'`]([^"'`]+)["'`]|@(?:Get|Post|Put|Patch|Delete)\s*\(\s*["'`]([^"'`]+)["'`]|@\w+\.(?:get|post|put|patch|delete|route)\s*\(\s*["']([^"']+)["']/;
 const EDIT_TOOLS = ["Edit", "Write", "MultiEdit"];
 // Injection budgets, in estimated tokens.
-const PROMPT_TOKENS = 600, PRE_EDIT_TOKENS = 600, POST_EDIT_TOKENS = 300;
+const PROMPT_TOKENS = CONTEXT_TOKENS, PRE_EDIT_TOKENS = 1600, POST_EDIT_TOKENS = 300;
 
 /** Repository-relative path of a tool target, or null outside the repository. */
 function toolFile(root: string, input: HookInput): string | null {
@@ -239,7 +242,7 @@ async function onPostToolUse(root: string, input: HookInput): Promise<void> {
   if (!EDIT_TOOLS.includes(tool) || !filePath) return;
 
   const ti = input.tool_input ?? {};
-  const index = loadIndex(root);
+  const index = codeMap(root);
   const messages: string[] = [];
 
   const written = ((ti.new_string ?? ti.content ?? "") as string);

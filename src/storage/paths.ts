@@ -18,8 +18,10 @@ export function reportPath(root: string): string {
   return join(root, ".kurtel", "REPORT.md");
 }
 
+// Outside the repository: it holds the user's messages, and an agent that finds it among the project's files
+// takes it for planted instructions.
 export function injectionLogPath(root: string): string {
-  return join(root, ".kurtel", "injection-log.md");
+  return join(cacheDir(root), "injection-log.md");
 }
 
 export function injectedIdsPath(root: string): string {
@@ -32,6 +34,11 @@ export function vectorsPathsIn(dir: string): { bin: string; vocab: string } {
 
 export function userVectorsDir(): string {
   return join(homedir(), ".kurtel", "vectors");
+}
+
+/** Where the local models (sentence vectors, reading model) are kept. */
+export function modelsDir(): string {
+  return process.env.KURTEL_MODELS_DIR || join(homedir(), ".kurtel", "models");
 }
 
 // src/storage and dist/storage have the same depth relative to assets.

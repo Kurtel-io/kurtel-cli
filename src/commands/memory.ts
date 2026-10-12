@@ -4,7 +4,10 @@ import { repoRoot, headCommit } from "../repository/git.js";
 import { loadIndex, indexGeneratedAt } from "../storage/graph-index.js";
 import { kurtelEnabled, memoryEnabled, memorySwitchOn, setMemoryEnabled, memoryDisabledGlobally, repoActivated, activateRepo } from "../storage/state.js";
 import { accessGated, accessMemory } from "../storage/access.js";
-import { injectionLogPath } from "../storage/paths.js";
+import { injectionLogPath, modelsDir } from "../storage/paths.js";
+import { cloudAllowed } from "../security/network.js";
+import { READING_MODEL, SENTENCE_MODEL, installLocalModels, localModelsInstalled } from "../context/local-models.js";
+import { refreshSentenceVectors } from "../context/selection.js";
 import { readInjectionLog, clearInjectionLog } from "../storage/journal.js";
 import { disableSharing, enableSharing, sharedConfig, syncShared } from "../memory/shared.js";
 import { setConfigValue } from "../lib/config.js";
@@ -29,6 +32,25 @@ export async function memoryCommand(
   const root = repoRoot();
 
   switch (action) {
+    case "models": {
+      if ((args[0] ?? "status") === "install") {
+        // The download goes to huggingface.co, which no private or offline policy allows.
+        if (!cloudAllowed()) { console.log(`${c.red(symbols.cross)} The network policy of this machine does not allow the download. Copy the models into ${modelsDir()} instead.`); process.exitCode = 1; return; }
+        const spin = opts.quiet ? null : new Spinner("Downloading the local models (about 140 MB)…").start();
+        try {
+          const dir = await installLocalModels();
+          const vectors = await refreshSentenceVectors(root);
+          spin?.succeed(`Local models ready → ${dir}${vectors ? ` · ${vectors.toLocaleString()} rules prepared` : ""}`);
+        } catch (e) {
+          spin?.fail(`Install failed: ${e instanceof Error ? e.message : String(e)}`);
+          process.exitCode = 1;
+        }
+        return;
+      }
+      if (localModelsInstalled()) console.log(`${c.gray("models")}    ${c.white(`${SENTENCE_MODEL.id} · ${READING_MODEL}`)} ${c.dim(`(${modelsDir()})`)}`);
+      else console.log(c.dim("No local models: rules are chosen on words. Install them: `npm install -g @huggingface/transformers`, then `kurtel memory models install`."));
+      return;
+    }
     case "vectors": {
       const sub = args[0] ?? "status";
       if (sub === "import") {

@@ -1,4 +1,4 @@
-import type { KnowledgeStore, KnowledgeVersion, KnowledgeRelation, KnowledgeRef } from "../domain/knowledge.js";
+import { memoryRef, type KnowledgeStore, type KnowledgeVersion, type KnowledgeRelation, type KnowledgeRef } from "../domain/knowledge.js";
 
 export function queryTime(at?: string): number {
   const time = at === undefined ? Date.now() : Date.parse(at);
@@ -25,6 +25,9 @@ export function resolveKnowledge(store: KnowledgeStore, query: string, time: num
   if (!query.trim()) throw new Error("A knowledge ID, version ID or search phrase is required");
   const exactVersion = store.versions.find(v => v.id === query && Date.parse(v.recorded_at) <= time);
   if (exactVersion) return [exactVersion];
+  // The short reference shown to agents.
+  const cited = store.versions.filter(v => memoryRef(v.id) === query && memoryRef(v.id) !== v.id && Date.parse(v.recorded_at) <= time);
+  if (cited.length) return cited;
   const heads = headsAt(store, time);
   const exact = heads.find(v => v.knowledge_id === query);
   if (exact) return [exact];

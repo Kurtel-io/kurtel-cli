@@ -12,6 +12,7 @@ import { engineTarget, noticeMemoryRefusal } from "./engine.js";
 import { purgeCaptureText } from "./capture-retention.js";
 import { syncShared } from "./shared.js";
 import { backgroundUpkeep } from "./upkeep.js";
+import { linkNewRules } from "./rule-links.js";
 import { memoryEnabled, repoActivated } from "../storage/state.js";
 import { policyFetch } from "../security/network.js";
 
@@ -37,11 +38,14 @@ const normalized = (text: string) => text.replace(/\s+/g, " ").trim().replace(/[
 /** Existing knowledge with the same text, or overlapping quotes from the same message. */
 export function sameKnowledge(store: KnowledgeStore, text: string, eventId: string, except?: string): KnowledgeVersion | undefined {
   const wanted = normalized(text);
-  return [...heads(store).values()].find(v => {
-    if (v.knowledge_id === except) return false;
-    const have = normalized(v.content);
-    return have === wanted || (v.event_ids.includes(eventId) && wanted.length > 0 && have.length > 0 && (have.includes(wanted) || wanted.includes(have)));
-  });
+  const known = [...heads(store).values()].filter(v => v.knowledge_id !== except).map(v => ({ v, have: normalized(v.content) }));
+  return (known.find(k => k.have === wanted) ?? known.find(k => k.v.event_ids.includes(eventId) && wanted.length > 0 && k.have.length > 0 && (k.have.includes(wanted) || wanted.includes(k.have))))?.v;
+}
+
+/** The quote says what is known and more. */
+export function fullerQuote(text: string, known: KnowledgeVersion): boolean {
+  const wanted = normalized(text), have = normalized(known.content);
+  return wanted !== have && wanted.includes(have);
 }
 
 /** Turns of a session: a user message and everything until the next one. */
@@ -248,10 +252,13 @@ export async function runCorrectionCheck(root: string, session: string, messageI
   } catch (error) {
     verdict = { kind: "withheld", reason: error instanceof Error ? error.message.slice(0, 80) : "classifier_error" };
   }
+  const settled = new Date().toISOString();
   try {
     settleTurn(root, session, pending.turn, verdict);
     try { purgeCaptureText(root, session); } catch { /* Store busy: erased later. */ }
   } finally { clearPending(root, session, messageId); }
+  // What the user explained when correcting may amend a rule already remembered.
+  try { await linkNewRules(root, settled); } catch { /* No link recorded. */ }
   backgroundUpkeep(root);
   try { await syncShared(root); } catch { /* Offline or busy: sent later. */ }
   return verdict.kind;

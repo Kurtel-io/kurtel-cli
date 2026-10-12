@@ -9,6 +9,14 @@ export function renderKnowledge(result: ReturnType<typeof explainKnowledge> | Re
   if ("selected" in result && result.selected) {
     const v = result.selected;
     lines.push(`${v.content}\n${v.id} · ${v.state} · version ${v.version}`);
+    // Who and when, in plain words, before the detailed records.
+    const capture = "sources" in result && result.sources ? result.sources.find(s => s.id.startsWith("capture:")) : undefined;
+    if (capture) {
+      let role: unknown; try { role = JSON.parse(capture.content ?? "{}").role; } catch { /* No role recorded. */ }
+      const session = /session\/([^/]+)/.exec(capture.reference)?.[1], when = `on ${v.recorded_at.slice(0, 10)}${session ? `, in session ${session}` : ""}`;
+      const corrected = v.event_ids.some(id => id.startsWith("correction:"));
+      lines.push(role === "user" || corrected ? `Said by the user ${when}${corrected ? ", when correcting the agent" : ""}. Kept word for word from their message.` : `Noted from the agent's work ${when}. Not said by the user.`);
+    }
     if (result.historical_version) lines.push(`Historical version; latest known version: ${result.current_version_id}`);
     if (!result.valid_at_query_time) lines.push("This version is outside its validity period at the requested date.");
     if (!result.reasons.length) lines.push("Reason unknown: no \"motivated by\" relation recorded. Evidence that something exists does not explain a decision.");

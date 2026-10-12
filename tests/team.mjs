@@ -99,8 +99,8 @@ try {
   home(homeA); await teamOperation(rootA, { action: 'erase', id: draft.id }); home(homeB);
   const erased = await compactContext(rootB, null, 'Edit src/payment.ts', { memoryOnly: true, paths: ['src/payment.ts'] });
   assert.equal(erased.text, ''); assert.equal(erased.stillValid(result.items[0].key), false);
-  assert.match(JSON.parse(await hook()).hookSpecificOutput.additionalContext, /Previously injected memory is stale/);
-  assert.match(deliverContext(rootB, 'b-session', erased.items, erased.revision, () => {}, { stillValid: erased.stillValid }).text, /Previously injected memory is stale/);
+  assert.match(JSON.parse(await hook()).hookSpecificOutput.additionalContext, /no longer confirmed as current/);
+  assert.match(deliverContext(rootB, 'b-session', erased.items, erased.revision, () => {}, { stillValid: erased.stillValid }).text, /no longer confirmed as current/);
   saveNetworkPolicy({ version: 1, mode: 'offline', engine_origins: [] });
   const count = requests.length;
   assert((await compactContext(rootB, null, 'Edit src/payment.ts')).warnings.includes('team_memory_unavailable'));

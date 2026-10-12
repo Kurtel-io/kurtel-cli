@@ -10,11 +10,12 @@ import { memoryEnabled, repoActivated } from "../storage/state.js";
 import { sessionCaptureEnabled, ingestSession } from "../integrations/session-capture.js";
 import { currentBranch, headCommit } from "../repository/git.js";
 import { acquireLock, releaseLock } from "../storage/lock.js";
-import { sameKnowledge, sessionTurns, verdictFor } from "./automatic.js";
+import { fullerQuote, sameKnowledge, sessionTurns, verdictFor } from "./automatic.js";
 import { purgeCaptureText, textErased } from "./capture-retention.js";
 import { syncShared } from "./shared.js";
 import { engineTarget, noticeMemoryRefusal, sameEngine } from "./engine.js";
 import { backgroundUpkeep } from "./upkeep.js";
+import { linkNewRules } from "./rule-links.js";
 
 const LEARNING_LOCK_STALE_MS = 10 * 60_000;
 import { countTokens } from "../context/budget.js";
@@ -126,17 +127,20 @@ export function applyExtraction(root: string, request: ExtractionRequest, respon
     const heads = new Map(current.versions.map(v => [v.knowledge_id, v]));
     for (const candidate of response.candidates) {
       const event = eventMap.get(candidate.event_id)!;
-      const knowledgeId = `learned:${digest(canonicalJSON([candidate.kind, candidate.quote.replace(/\s+/g, " ").trim(), [...candidate.zones].sort()]))}`;
-      const head = heads.get(knowledgeId);
+      let knowledgeId = `learned:${digest(canonicalJSON([candidate.kind, candidate.quote.replace(/\s+/g, " ").trim(), [...candidate.zones].sort()]))}`;
+      let head = heads.get(knowledgeId);
       if (head?.event_ids.includes(event.id)) continue;
       // Already known under another identity (typically the user's explanation kept by a correction): not recreated.
-      if (sameKnowledge({ ...current, versions: [...current.versions, ...batch.versions] }, candidate.quote, event.id, knowledgeId)) continue;
+      // A quote that says more replaces the known text: the shorter one may have left out the detail that matters.
+      const same = sameKnowledge({ ...current, versions: [...current.versions, ...batch.versions] }, candidate.quote, event.id, knowledgeId);
+      if (same && !fullerQuote(candidate.quote, same)) continue;
+      if (same) { knowledgeId = same.knowledge_id; head = same; }
       // Automatic memory: active by default; a turn already judged decides first (withheld: not stored).
       const verdict = verdictFor(current, request.session_id, event.id);
       if (verdict?.state === "withheld") continue;
       const id = `version:${digest(`${knowledgeId}:${request.batch_id}:${event.id}`)}`;
       const version: KnowledgeVersion = { id, knowledge_id: knowledgeId, version: (head?.version ?? 0) + 1, previous_version_id: head?.id ?? null,
-        kind: candidate.kind as KnowledgeVersion["kind"], state: verdict ? "contested" : head?.state ?? "active", content: candidate.quote, zones: candidate.zones,
+        kind: same ? same.kind : candidate.kind as KnowledgeVersion["kind"], state: verdict ? "contested" : head?.state ?? "active", content: candidate.quote, zones: candidate.zones.length ? candidate.zones : head?.zones ?? [],
         source_ids: [...new Set([...(head?.source_ids ?? []), ...event.source_ids])], event_ids: [...new Set([...(head?.event_ids ?? []), event.id, ...(verdict ? [verdict.eventId] : [])])], recorded_at: now, valid_from: null, valid_until: null, legacy_pattern_id: null, legacy_score: null };
       batch.versions.push(version); heads.set(knowledgeId, version);
       if (head) for (const relation of [...current.relations, ...batch.relations]) {
@@ -189,8 +193,10 @@ export async function learnSession(root: string, session: string): Promise<{ pro
     }
     // A kill switch changed during the request takes effect before committing results.
     if (!memoryEnabled(root) || !sessionCaptureEnabled(root, session) || !sameEngine(root, "extract", target)) throw new Error("Learning configuration changed while request was running");
+    const started = new Date().toISOString();
     applyExtraction(root, request, response);
     try { purgeCaptureText(root, session); } catch { /* Store busy: the next hook erases it. */ }
+    try { await linkNewRules(root, started); } catch { /* No link recorded: the selection uses the closest rule. */ }
     // Already in a background process: share what was just learned.
     backgroundUpkeep(root);
     try { await syncShared(root); } catch { /* Offline or busy: the next synchronization sends it. */ }

@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { digest, knowledgePath, readKnowledge } from "./knowledge.js";
+import { memoryRef } from "../domain/knowledge.js";
 import type { PriorHint } from "../memory/tool-observation.js";
 import { codeObservations, type CodeObservation } from "./code-observations.js";
 import { loadIndex } from "./graph-index.js";
@@ -67,6 +68,22 @@ export function recordInjection(root: string, session: string | undefined, event
   }) });
 }
 
+/** Files the session has edited, most recent first. */
+export function editedFiles(root: string, session: string, limit = 5): string[] {
+  const files: string[] = [];
+  for (const file of [usagePath(root) + ".old", usagePath(root)]) {
+    let content: string;
+    try { content = readFileSync(file, "utf8"); } catch { continue; }
+    for (const line of content.split("\n")) {
+      try {
+        const row = JSON.parse(line);
+        if (row.k === "tool" && row.s === sessionKey(session) && ["Edit", "Write", "MultiEdit"].includes(row.tool) && typeof row.file === "string") files.push(row.file);
+      } catch { /* An incomplete journal line is not evidence. */ }
+    }
+  }
+  return [...new Set(files.reverse())].slice(0, limit);
+}
+
 export function recordToolUse(root: string, session: string | undefined, tool: string, file: string): void {
   append(root, { t: new Date().toISOString(), s: sessionKey(session), k: "tool", tool, file });
 }
@@ -78,7 +95,7 @@ export function recordCapturedContext(root: string, session: string, tool: strin
   const content = body?.content ?? body?.result?.content;
   const text = typeof response === "string" ? response : Array.isArray(content) ? content.filter(c => c.type === "text" && typeof c.text === "string").map(c => c.text).join("\n") : "";
   if (!text || text.length > 100000) return;
-  const versions = readKnowledge(root).versions.filter(v => text.includes(`Memory ${v.id}.`));
+  const versions = readKnowledge(root).versions.filter(v => text.includes(`Memory ${memoryRef(v.id)}.`));
   recordInjection(root, session, "MCP:get_context", countTokens(text), versions.map(v => ({ key: `memory:action:${v.id}:${digest(text)}`, text: "", files: v.zones })));
 }
 

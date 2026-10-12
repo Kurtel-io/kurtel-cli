@@ -18,12 +18,38 @@ const STOPWORDS_RAW = [
 
 const STOPWORDS = new Set(STOPWORDS_RAW.map((w) => foldAccents(w)));
 
-export function tokenize(text: string): string[] {
+/** Every word of a text, repeats kept. */
+export function terms(text: string): string[] {
   // Normalize before splitting so accented French words stay intact.
-  return [...new Set(
-    foldAccents(text.toLowerCase())
-      .split(/[^a-z0-9_]+/)
-      .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
-  )];
+  return foldAccents(text.toLowerCase())
+    .split(/[^a-z0-9_]+/)
+    .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+}
+
+export function tokenize(text: string): string[] {
+  return [...new Set(terms(text))];
+}
+
+/**
+ * BM25 score of each text for the query words: a rare shared word counts more than a common one, and a long
+ * text gains nothing from its length. Rarity is measured among the texts given.
+ */
+export function lexicalScores(query: string[], texts: string[], k1 = 1.2, b = 0.75): number[] {
+  const docs = texts.map(terms), average = docs.reduce((n, d) => n + d.length, 0) / Math.max(1, docs.length);
+  const containing = new Map<string, number>();
+  for (const d of docs) for (const w of new Set(d)) containing.set(w, (containing.get(w) ?? 0) + 1);
+  const wanted = [...new Set(query)].filter((w) => containing.has(w));
+  return docs.map((d) => {
+    const counts = new Map<string, number>();
+    for (const w of d) counts.set(w, (counts.get(w) ?? 0) + 1);
+    let score = 0;
+    for (const w of wanted) {
+      const tf = counts.get(w);
+      if (!tf) continue;
+      const n = containing.get(w)!;
+      score += Math.log(1 + (docs.length - n + 0.5) / (n + 0.5)) * tf * (k1 + 1) / (tf + k1 * (1 - b + b * d.length / average));
+    }
+    return score;
+  });
 }
 

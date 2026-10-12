@@ -10,7 +10,7 @@ const root = join(fixture, 'repo'), home = join(fixture, 'home'); mkdirSync(root
 process.env.HOME = home; process.env.USERPROFILE = home;
 const { activateRepo, setMemoryEnabled } = await import('../dist/storage/state.js');
 const { captureHook, setCaptureEnabled, ingestSession } = await import('../dist/integrations/claude-code/capture.js');
-const { readKnowledge, knowledgePath } = await import('../dist/storage/knowledge.js');
+const { readKnowledge, knowledgePath, linkedRules } = await import('../dist/storage/knowledge.js');
 const { prepareExtraction, applyExtraction, configureLearning, learnSession, resumeContext, selectResume, consumeResume, compactWorking } = await import('../dist/memory/session-learning.js');
 activateRepo(root); setCaptureEnabled(root, true);
 assert.equal(compactWorking([{ event_id: 'one', quote: 'Constraint', category: 'constraint' }, { event_id: 'one', quote: 'Constraint with reason', category: 'constraint' }]).length, 1);
@@ -45,11 +45,24 @@ ingestSession(root, sid);
 request = prepareExtraction(readKnowledge(root), sid);
 assert.equal(request.events.length, 1);
 assert(request.context_events.some(e => e.id === user.id));
-let calls = 0, mode = 'fail';
+let calls = 0, mode = 'fail', linkRequests = [];
 const server = createServer(async (req, res) => {
-  calls++; let text = ''; for await (const part of req) text += part;
+  let text = ''; for await (const part of req) text += part;
   const batch = JSON.parse(text);
+  // Linked rules: the engine names the remembered rules a new rule must be read with.
+  if (req.url === '/v1/link') {
+    linkRequests.push(batch);
+    if (mode === 'link-down') { res.writeHead(502); res.end('{}'); return; }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ protocol: 1, linked: batch.candidates.filter(c => c.text.startsWith('Ne jamais modifier')).map(c => c.id) })); return;
+  }
+  calls++;
   if (mode === 'fail') { res.writeHead(503); res.end('{}'); return; }
+  if (mode === 'amend' || mode === 'link-down') {
+    const event = batch.events.find(e => /^(Exception|Autre)/.test(e.content));
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ protocol: 1, engine: 'test', batch_id: batch.batch_id, candidates: [{ event_id: event.id, quote: event.content, kind: 'constraint', zones: [], reason_event_id: null, reason_quote: null }], working: [] })); return;
+  }
   if (mode === 'lock') writeFileSync(knowledgePath(root) + '.lock', 'other writer');
   if (mode === 'disable') setMemoryEnabled(root, false);
   res.setHeader('content-type', 'application/json');
@@ -76,7 +89,25 @@ try {
   await assert.rejects(learnSession(root, sid), /changed/);
   assert(prepareExtraction(readKnowledge(root), sid));
   setMemoryEnabled(root, true);
+  // A rule that amends a remembered one is recorded as linked to it, on the engine's word.
+  assert.equal(linkRequests.length, 0, 'nothing learned: nothing to link');
+  captureHook(root, 'user-prompt-submit', { session_id: sid, prompt_id: 'p4', prompt: 'Exception: lib/stripe.ts peut changer pour la migration v2 du contrat.' });
+  mode = 'amend';
+  await learnSession(root, sid);
+  store = readKnowledge(root);
+  const amended = store.versions.find(v => v.content === 'Ne jamais modifier lib/stripe.ts'), amending = store.versions.find(v => v.content.startsWith('Exception'));
+  assert.equal(linkRequests.length, 1); assert.equal(linkRequests[0].rule.id, amending.id);
+  assert(linkRequests[0].candidates.some(c => c.id === amended.id) && !linkRequests[0].candidates.some(c => c.id === amending.id));
+  const link = store.relations.filter(r => r.kind === 'read_with');
+  assert.equal(link.length, 1); assert.equal(link[0].from.id, amending.id); assert.equal(link[0].to.id, amended.id);
+  assert.deepEqual(linkedRules(root), [[amending.knowledge_id, amended.knowledge_id]]);
+  // Without an answer the rule is learned all the same, with no link.
+  captureHook(root, 'user-prompt-submit', { session_id: sid, prompt_id: 'p5', prompt: 'Autre contrainte: lib/stripe.ts garde ses exports nommés.' });
+  mode = 'link-down';
+  await learnSession(root, sid);
+  store = readKnowledge(root);
+  assert(store.versions.some(v => v.content.startsWith('Autre contrainte') && v.state === 'active')); assert.equal(store.relations.filter(r => r.kind === 'read_with').length, 1);
   configureLearning(root);
   await assert.rejects(learnSession(root, sid), /disabled/);
 } finally { await new Promise(resolve => server.close(resolve)); }
-console.log('PASS: incremental receipts, grounded extraction, active by default, working memory, retries, response reuse and kill switches.');
+console.log('PASS: incremental receipts, grounded extraction, active by default, working memory, retries, response reuse, linked rules and kill switches.');

@@ -126,7 +126,7 @@ await shared.syncShared(root);
 assert.equal([...heads().values()].filter(v => v.content.startsWith('DECISION: src/pay.ts keeps amounts') && v.state === 'active').length, 1, 'Alice sees one knowledge too');
 use('bob');
 const context = await compactContext(root, null, 'rounding src/pay.ts', { paths: ['src/pay.ts'], session: 'bob-1' });
-assert(context.items.some(i => i.text.includes('integer cents') && i.text.includes('shared by a teammate')), 'teammate provenance');
+assert(context.items.some(i => i.text.includes('integer cents') && i.text.includes("a teammate's session")), 'teammate provenance');
 
 // 3. Bob's confirmation counts for Alice too.
 await user('bob-1', 'Add refunds to src/pay.ts');

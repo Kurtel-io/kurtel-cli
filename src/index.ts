@@ -59,7 +59,7 @@ program.command("context")
   .argument("<prompt>")
   .option("--mode <mode>", "action | investigation", "action")
   .option("--path <paths...>", "Explicit repository-relative task paths")
-  .option("--budget <tokens>", "Local cl100k_base token budget", "600")
+  .option("--budget <tokens>", "Local cl100k_base token budget", "2000")
   .option("--json", "Include token counts, omissions and evaluation warnings")
   .action(contextCommand);
 
@@ -214,9 +214,9 @@ program
 
 program
   .command("memory")
-  .description("Inspect or toggle Kurtel memory (status | on | off | sync | share | preview | log | vectors)")
-  .argument("[action]", "status | on | off | sync | share | preview | log | vectors", "status")
-  .argument("[args...]", "extra args (e.g. `preview \"<prompt>\"`, `log clear`, `share on|off|status|now`, `vectors import <file.vec>`)")
+  .description("Inspect or toggle Kurtel memory (status | on | off | sync | share | preview | log | vectors | models)")
+  .argument("[action]", "status | on | off | sync | share | preview | log | vectors | models", "status")
+  .argument("[args...]", "extra args (e.g. `preview \"<prompt>\"`, `log clear`, `share on|off|status|now`, `vectors import <file.vec>`, `models install`)")
   .option("--json", "Machine-readable output", false)
   .option("--quiet", "No spinner/log output (used by background sync)", false)
   .option("--global", "Apply on/off to every repo on this machine (kill switch)", false)

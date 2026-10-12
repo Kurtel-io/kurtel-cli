@@ -31,7 +31,9 @@ export function observeTool(root: string, tool: string, input: Record<string, un
   const result = response && typeof response === "object" ? response as Record<string, unknown> : {};
   const exit = result.exit_code ?? result.exitCode;
   const command = input.command ?? input.cmd;
-  const outside = paths.some(p => typeof p === "string" && p.trim() !== "" && p.length <= 1000 && !repositoryTarget(root, p) && resolve(root, p.replace(/\\/g, "/")) !== resolve(root));
+  // The agent's own memory folder is not another repository: Claude Code writes there when the user says something worth keeping.
+  const ownMemory = (p: string) => /(?:^|\/)\.claude\/projects\/[^/]+\/memory\//.test(p.replace(/\\/g, "/"));
+  const outside = paths.some(p => typeof p === "string" && p.trim() !== "" && p.length <= 1000 && !repositoryTarget(root, p) && resolve(root, p.replace(/\\/g, "/")) !== resolve(root) && !ownMemory(p));
   return {
     tool, targets: [...new Set(paths.map(p => repositoryTarget(root, p)).filter((p): p is string => !!p))].slice(0, 32),
     ...(outside ? { outside: true } : {}),

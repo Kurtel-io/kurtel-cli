@@ -19,6 +19,13 @@ const { recordInjection, sessionKey } = await import('../dist/storage/usage.js')
 const auto = await import('../dist/memory/automatic.js');
 activateRepo(root); setCaptureEnabled(root, true);
 
+// A write to Claude Code's own memory folder does not make the turn foreign; a file of another project does.
+{
+  const { observeTool } = await import('../dist/memory/tool-observation.js');
+  assert.equal(observeTool(root, 'Write', { file_path: join(home, '.claude/projects/-home-user-repo/memory/feedback.md') }, {}, false).outside, undefined);
+  assert.equal(observeTool(root, 'Write', { file_path: join(temp, 'other-repo/src/a.ts') }, {}, false).outside, true);
+}
+
 // Engine with controllable models.
 const token = 'automatic-memory-test-token-000000000000';
 process.env.KURTEL_ENGINE_TOKEN = token;
@@ -116,8 +123,15 @@ assert(explained.event_ids.some(id => id.startsWith('correction:')));
 const correctionEvent = events('kurtel-correction-v1').at(-1);
 assert(!correctionEvent.content.includes('accounting'), 'no message text in the correction event');
 const after = await compactContext(root, null, 'refund amount src/pay.ts', { paths: ['src/pay.ts'], session: 's3' });
-assert(after.items.some(i => i.text.includes('stated by the user when correcting the agent')));
+assert(after.items.some(i => i.text.includes('The user said this in an earlier session on this repository') && i.text.includes('when correcting the agent')));
 assert(!after.items.some(i => i.text.includes('euro floats') || i.text.includes('stored in euros')));
+// A rule is cited by a short reference, which the provenance command resolves.
+{
+  const { resolveKnowledge } = await import('../dist/memory/knowledge-history.js');
+  const reference = after.items.map(i => /Memory ([0-9a-f]{8})\./.exec(i.text)?.[1]).find(Boolean);
+  assert(reference, 'short reference in the delivered text');
+  assert.equal(resolveKnowledge(readKnowledge(root), reference, Date.now()).length, 1);
+}
 
 // 4. Extraction that finishes after the verdict follows it (born contested).
 await user('s4', 'Update src/pay.ts totals');
@@ -232,6 +246,33 @@ auto.startCorrectionCheck(root, 'd2');
 await settled('d2');
 await learnSession(root, 'd2');
 assert.equal(copies().length, 1, 'extraction after the verdict adds no copy');
+// c. The correction kept one sentence; the fuller quote of the same message replaces it, in the same knowledge.
+const kept = 'totals are rounded half up';
+classify = async () => ({ correction: true, contradicted: [], explanation: kept });
+await user('d3', 'Round the totals in src/stock.ts');
+await edit('d3', 'src/stock.ts');
+await stop('d3', 'Done.');
+await user('d3', `No, ${kept}, and quantities must stay whole under the WHOLE-7 rule.`);
+auto.startCorrectionCheck(root, 'd3');
+await settled('d3');
+const short = [...heads().values()].filter(v => v.content.includes(kept));
+assert(short.length === 1 && short[0].content === kept, 'the correction keeps its sentence');
+await learnSession(root, 'd3');
+const full = [...heads().values()].filter(v => v.content.includes(kept));
+assert.equal(full.length, 1, 'still one knowledge');
+assert(full[0].knowledge_id === short[0].knowledge_id && full[0].version === short[0].version + 1 && full[0].content.includes('WHOLE-7') && full[0].state === 'active' && full[0].kind === 'constraint' && full[0].zones.includes('src/stock.ts'), 'the fuller quote is a new version of it, with its kind and files');
+await learnSession(root, 'd3');
+assert.equal([...heads().values()].find(v => v.content.includes(kept)).version, full[0].version, 'learning again changes nothing');
 
+// What the user said, with no file, reaches a long message that shares two of its words; an agent's note in the same case does not.
+if (!process.env.KURTEL_TEST_ENGINE) {
+  await user('s9', 'Exports for the auditors must stay whole: one archive, signed with the ledger key.');
+  await stop('s9', 'DECISION: the nightly archive job retries with an exponential delay.');
+  await learnSession(root, 's9');
+  const long = 'Prepare the nightly archive for the auditors in src/pay.ts. ' + 'Keep the layout of the monthly report and all of its columns. '.repeat(6);
+  const picked = await compactContext(root, null, long, { paths: ['src/pay.ts'], session: 's9-next' });
+  assert(picked.items.some(i => i.text.includes('signed with the ledger key') && i.text.includes('The user said this')), 'a person\'s words are kept for their words');
+  assert(!picked.items.some(i => i.text.includes('exponential delay')), 'an agent\'s note without a file stays out');
+}
 await new Promise(resolve => server.close(resolve));
 console.log(`PASS: automatic memory (${process.env.KURTEL_TEST_ENGINE ? 'real engine' : 'fixture'}) — active by default, suspension, confirmation by silence, contradiction, user explanation, bare no, born contested, withheld on failure and stale classifier, session end validates nothing, hard-only pre-edit, user message and own rules only, no duplicate between correction and extraction.`);

@@ -1,7 +1,7 @@
 import type { LessonDetails } from "./lessons.js";
 export const knowledgeKinds = ["convention", "decision", "constraint", "fact", "procedure", "incident", "counterexample", "rejected_alternative", "open_question", "legacy_pattern", "lesson"] as const;
 export const eventKinds = ["instruction", "proposal", "acceptance", "action_attempted", "outcome_verified", "observation", "error_observed", "legacy_import"] as const;
-export const relationKinds = ["applies_to", "motivated_by", "supported_by", "contradicts", "supersedes", "exception_to", "alternative_to"] as const;
+export const relationKinds = ["applies_to", "motivated_by", "supported_by", "contradicts", "supersedes", "exception_to", "alternative_to", "read_with"] as const;
 export const knowledgeStates = ["proposed", "active", "contested", "superseded", "archived"] as const;
 
 export interface SourceAttribution {
@@ -75,4 +75,9 @@ export interface KnowledgeStore extends KnowledgeBatch {
   schema_version: 2;
   scope: string;
   revision: number;
+}
+
+/** How a version is cited in what an agent reads: eight characters of its hash instead of sixty-four. Other ids stay whole. */
+export function memoryRef(id: string): string {
+  return /^version:[0-9a-f]{64}$/.test(id) ? id.slice(8, 16) : id;
 }

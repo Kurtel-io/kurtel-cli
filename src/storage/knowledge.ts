@@ -57,6 +57,7 @@ CREATE INDEX IF NOT EXISTS heads_state ON heads (state);
 CREATE INDEX IF NOT EXISTS zones_zone ON zones (zone);
 CREATE INDEX IF NOT EXISTS relations_from ON relations (from_id);
 CREATE INDEX IF NOT EXISTS relations_to ON relations (to_id);
+CREATE TABLE IF NOT EXISTS sentence_vectors (knowledge_id TEXT PRIMARY KEY, version_id TEXT NOT NULL, model TEXT NOT NULL, data BLOB NOT NULL);
 `;
 /** How long a writer waits for another. */
 const BUSY_TIMEOUT_MS = Number(process.env.KURTEL_STORE_BUSY_MS ?? 5000);
@@ -331,6 +332,16 @@ export interface KnowledgeQuery {
   limit?: number;
 }
 
+/** How many rules the store has and how many of them hold each word: what makes a word rare here. */
+export function wordSpread(root: string, words: string[]): { rules: number; holding: Map<string, number> } {
+  const db = open(root, false), holding = new Map<string, number>();
+  if (db === null) return { rules: 0, holding };
+  const rules = (db.prepare("SELECT count(*) AS n FROM heads").get() as { n: number }).n;
+  const count = db.prepare("SELECT count(*) AS n FROM knowledge_text WHERE knowledge_text MATCH ?");
+  for (const word of [...new Set(words)].filter(w => /^[\p{L}\p{N}_]{3,}$/u.test(w)).slice(0, 32)) holding.set(word, (count.get(`"${word}"`) as { n: number }).n);
+  return { rules, holding };
+}
+
 /** The part of the store that may concern one task, with what is needed to assess it. */
 export function readKnowledgeFor(root: string, query: KnowledgeQuery): KnowledgeStore {
   const db = open(root, false);
@@ -406,4 +417,31 @@ export function saveVectors(root: string, tableId: string, rows: { knowledge_id:
   if (db === null || rows.length === 0) return;
   const put = db.prepare("INSERT INTO vectors (knowledge_id, version_id, table_id, data) VALUES (?, ?, ?, ?) ON CONFLICT (knowledge_id) DO UPDATE SET version_id = excluded.version_id, table_id = excluded.table_id, data = excluded.data");
   db.transaction(() => { for (const r of rows) put.run(r.knowledge_id, r.version_id, tableId, r.vector ? Buffer.from(r.vector.buffer, r.vector.byteOffset, r.vector.byteLength) : Buffer.alloc(0)); })();
+}
+
+/** Every active rule with its files and, when one is stored for this model, its sentence vector. */
+export function activeRules(root: string, model: string): { knowledge_id: string; version_id: string; content: string; zones: string[]; recorded_at: string; vector: Float32Array | null }[] {
+  const db = open(root, false);
+  if (db === null) return [];
+  return (db.prepare(`SELECT h.knowledge_id, h.version_id, v.json, x.data FROM heads h JOIN versions v ON v.id = h.version_id
+    LEFT JOIN sentence_vectors x ON x.knowledge_id = h.knowledge_id AND x.version_id = h.version_id AND x.model = ? WHERE h.state = 'active' ORDER BY v.seq`).all(model) as { knowledge_id: string; version_id: string; json: string; data: Buffer | null }[])
+    .map(r => {
+      const v = JSON.parse(r.json) as KnowledgeVersion;
+      return { knowledge_id: r.knowledge_id, version_id: r.version_id, content: v.content, zones: v.zones, recorded_at: v.recorded_at, vector: r.data ? new Float32Array(new Uint8Array(r.data).buffer) : null };
+    });
+}
+
+/** Pairs of knowledge recorded as to be read together, whatever the versions the link was recorded on. */
+export function linkedRules(root: string): [string, string][] {
+  const db = open(root, false);
+  if (db === null) return [];
+  return (db.prepare(`SELECT DISTINCT a.knowledge_id AS f, b.knowledge_id AS t FROM relations r JOIN versions a ON a.id = r.from_id JOIN versions b ON b.id = r.to_id
+    WHERE json_extract(r.json, '$.kind') = 'read_with'`).all() as { f: string; t: string }[]).map(r => [r.f, r.t]);
+}
+
+export function saveSentenceVectors(root: string, model: string, rows: { knowledge_id: string; version_id: string; vector: Float32Array }[]): void {
+  const db = open(root, false);
+  if (db === null || rows.length === 0) return;
+  const put = db.prepare("INSERT INTO sentence_vectors (knowledge_id, version_id, model, data) VALUES (?, ?, ?, ?) ON CONFLICT (knowledge_id) DO UPDATE SET version_id = excluded.version_id, model = excluded.model, data = excluded.data");
+  db.transaction(() => { for (const r of rows) put.run(r.knowledge_id, r.version_id, model, Buffer.from(r.vector.buffer, r.vector.byteOffset, r.vector.byteLength)); })();
 }

@@ -73,6 +73,7 @@ kurtel uninstall claude-code
 
 - **Source code:** never. The graph sent to kurtel.io is a digest of paths, exports, routes and relationships.
 - **Memory:** conversations are captured locally as a temporary buffer. Bounded excerpts are sent to kurtel.io, which uses a hosted language model to extract knowledge and recognize corrections; Kurtel does not store those requests. Captured text is erased from your machine once it has been learned from. Learned knowledge (short quotes with their files) is stored on kurtel.io for the members of your organization who have access to the repository. Conversations themselves are never shared.
+- **Choosing the rules for a message:** your message and up to 40 candidate rules are sent to kurtel.io, which has a hosted reading model score each rule against the message; nothing from that request is kept. When the service cannot be reached, the choice is made on your machine.
 - With `kurtel memory off`, only the graph digest is sent.
 - Every request is checked against your access to the repository. When access is removed, Kurtel stops in that repository and erases the knowledge it stored there on your machine.
 - Context given to an assistant is then subject to that assistant's own provider settings.
