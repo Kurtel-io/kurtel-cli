@@ -17,6 +17,9 @@ const { readKnowledge, knowledgePath, appendKnowledge, emptyBatch } = await impo
 const { countTokens } = await import('../dist/context/budget.js');
 const { watcherRunning } = await import('../dist/runtime/reindex.js');
 const { execFileSync } = await import('node:child_process');
+const { setCaptureEnabled } = await import('../dist/integrations/session-capture.js');
+const { configureLearning } = await import('../dist/memory/session-learning.js');
+const { createEngineServer } = await import('./fixtures/lesson-engine.mjs');
 activateRepo(root);
 // Real files matching the fixture index: the watcher started with the server rebuilds the map from them.
 mkdirSync(join(root, 'src'));
@@ -76,18 +79,53 @@ try {
   assert.equal((await client.callTool({ name: 'get_impact', arguments: { target: 'src/billing.ts' } })).isError, true);
   setKurtelEnabled(root, true);
 } finally { await client.close(); }
+// A stand-in engine: it keeps the user's message of each turn as a rule, and judges what get_context may deliver.
+const engine = createEngineServer({ token: 'test-token', model: async (_instructions, input) => ({ candidates: input.events.filter(e => e.role === 'user').map(e => ({ event_id: e.id, quote: e.content, kind: 'constraint', zones: [], reason_event_id: null, reason_quote: null })), working: [] }) });
+await new Promise(resolve => engine.listen(0, '127.0.0.1', resolve));
+configureLearning(root, `http://127.0.0.1:${engine.address().port}/v1/extract`);
+process.env.KURTEL_ENGINE_TOKEN = 'test-token';
 client = await connect(root, ['--allow-remember']);
 try {
+  assert.equal((await client.listTools()).tools.length, 10);
   const args = { idempotency_key: 'one', quote: 'Never change the billing interface.', source_text: 'User reportedly said: Never change the billing interface.', source_reference: 'conversation:unverified-report', kind: 'constraint', zones: ['src'] };
   const first = JSON.parse(text(await client.callTool({ name: 'remember', arguments: args })));
-  assert.equal(first.state, 'proposed'); assert.equal(first.authority, 'unverified_mcp_caller');
+  // What the agent chose to keep is active at once.
+  assert.equal(first.state, 'active'); assert.equal(first.authority, 'unverified_mcp_caller');
   const revision = readKnowledge(root).revision;
   assert(!((await client.callTool({ name: 'remember', arguments: args })).isError));
   assert.equal(readKnowledge(root).revision, revision);
   assert.equal((await client.callTool({ name: 'remember', arguments: { ...args, source_reference: 'other' } })).isError, true);
   assert.equal((await client.callTool({ name: 'remember', arguments: { ...args, idempotency_key: 'two', quote: 'Invented statement' } })).isError, true);
   assert.equal(readKnowledge(root).events.at(-1).kind, 'proposal');
-} finally { await client.close(); }
+  // The same words under another key are not stored twice.
+  const again = JSON.parse(text(await client.callTool({ name: 'remember', arguments: { ...args, idempotency_key: 'three', source_text: 'Said again: never change the billing interface.', quote: 'never change the billing interface.' } })));
+  assert.equal(again.already_known, true); assert.equal(again.version_id, first.version_id);
+  assert.equal(readKnowledge(root).revision, revision);
+  // And it is delivered with the next task that concerns it.
+  assert.match(text(await client.callTool({ name: 'get_context', arguments: { prompt: 'change the billing interface in src/billing.ts', paths: ['src/billing.ts'] } })), /Never change the billing interface\./);
+
+  // A passage handed over by an agent without hooks: refused while capture is off, then captured once, in order, and learned from.
+  const rule = 'Always quote invoice amounts in euros, never in dollars.';
+  const passage = { session_id: 's1', idempotency_key: 'k1', messages: [{ role: 'user', content: 'Prepare the invoice summary for this customer.' }, { role: 'assistant', content: 'Here it is, with the amounts in dollars.' }, { role: 'user', content: rule }, { role: 'assistant', content: 'Understood, euros from now on.' }], speaker: 'Inès Moreau' };
+  assert.equal((await client.callTool({ name: 'learn_from_conversation', arguments: passage })).isError, true);
+  assert.equal((await client.callTool({ name: 'learn_from_conversation', arguments: { ...passage, messages: [] } })).isError, true);
+  setCaptureEnabled(root, true);
+  assert.equal(JSON.parse(text(await client.callTool({ name: 'learn_from_conversation', arguments: passage }))).session_id, 'mcp:s1');
+  assert(!((await client.callTool({ name: 'learn_from_conversation', arguments: passage })).isError));
+  let learned;
+  for (let i = 0; i < 150 && !learned; i++) {
+    await new Promise(r => setTimeout(r, 200));
+    learned = readKnowledge(root).versions.find(v => v.content === rule);
+  }
+  assert(learned, 'the passage was learned from in the background'); assert.equal(learned.state, 'active');
+  const captured = readKnowledge(root).events.filter(e => e.session_id === 'mcp:s1' && e.id.startsWith('capture-event:')).sort((a, b) => a.recorded_at.localeCompare(b.recorded_at));
+  assert.deepEqual(captured.map(e => e.kind), ['instruction', 'proposal', 'instruction', 'proposal'], 'a retried passage is captured once, in order');
+  // Delivered with the name of the person who said it.
+  assert.match(text(await client.callTool({ name: 'get_context', arguments: { prompt: 'Quote the invoice amounts for this customer' } })), /The user \(Inès Moreau\) said this[^]*Always quote invoice amounts in euros/);
+  const named = { idempotency_key: 'named', quote: 'I am the one who approves refunds above 500 euros.', source_text: 'From now on, I am the one who approves refunds above 500 euros.', source_reference: 'conversation://refunds', kind: 'fact', zones: [], speaker: 'Priya Shah' };
+  assert(!((await client.callTool({ name: 'remember', arguments: named })).isError));
+  assert.match(text(await client.callTool({ name: 'get_context', arguments: { prompt: 'Who approves refunds above 500 euros?' } })), /\(Priya Shah, \d{4}-\d{2}-\d{2}\)[^]*I am the one who approves refunds/);
+} finally { await client.close(); engine.close(); }
 // Corrupt engine settings cannot affect graph-only mode.
 writeFileSync(join(dirname(knowledgePath(root)), 'learning.json'), '{not-json');
 client = await connect(root, ['--graph-only']);
@@ -96,4 +134,4 @@ try {
   assert.match(text(await client.callTool({ name: 'get_context', arguments: { prompt: 'inspect src/billing.ts', phase: 'before_edit' } })), /src\/billing.ts/);
 } finally { await client.close(); }
 execFileSync(process.execPath, [cli, 'watch', 'stop'], { cwd: root, env: process.env, stdio: 'ignore' });
-console.log('PASS: real MCP stdio lifecycle, watcher started for Codex, code map ignored by Git, strict inputs, fixed root, activation, kill switch, graph-only isolation, bounded context, sourced history without transcripts and idempotent proposed writes.');
+console.log('PASS: real MCP stdio lifecycle, watcher started for Codex, code map ignored by Git, strict inputs, fixed root, activation, kill switch, graph-only isolation, bounded context, sourced history without transcripts, idempotent writes active at once and delivered, a handed-over passage captured once in order and learned from.');

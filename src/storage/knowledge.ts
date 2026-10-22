@@ -420,23 +420,26 @@ export function saveVectors(root: string, tableId: string, rows: { knowledge_id:
 }
 
 /** Every active rule with its files and, when one is stored for this model, its sentence vector. */
-export function activeRules(root: string, model: string): { knowledge_id: string; version_id: string; content: string; zones: string[]; recorded_at: string; vector: Float32Array | null }[] {
+export function activeRules(root: string, model: string): { knowledge_id: string; version_id: string; content: string; zones: string[]; recorded_at: string; valid_from: string | null; valid_until: string | null; vector: Float32Array | null }[] {
   const db = open(root, false);
   if (db === null) return [];
   return (db.prepare(`SELECT h.knowledge_id, h.version_id, v.json, x.data FROM heads h JOIN versions v ON v.id = h.version_id
     LEFT JOIN sentence_vectors x ON x.knowledge_id = h.knowledge_id AND x.version_id = h.version_id AND x.model = ? WHERE h.state = 'active' ORDER BY v.seq`).all(model) as { knowledge_id: string; version_id: string; json: string; data: Buffer | null }[])
     .map(r => {
       const v = JSON.parse(r.json) as KnowledgeVersion;
-      return { knowledge_id: r.knowledge_id, version_id: r.version_id, content: v.content, zones: v.zones, recorded_at: v.recorded_at, vector: r.data ? new Float32Array(new Uint8Array(r.data).buffer) : null };
+      return { knowledge_id: r.knowledge_id, version_id: r.version_id, content: v.content, zones: v.zones, recorded_at: v.recorded_at, valid_from: v.valid_from ?? null, valid_until: v.valid_until ?? null, vector: r.data ? new Float32Array(new Uint8Array(r.data).buffer) : null };
     });
 }
 
-/** Pairs of knowledge recorded as to be read together, whatever the versions the link was recorded on. */
+/**
+ * Pairs of knowledge recorded as to be read together, whatever the versions the link was recorded on; a temporary
+ * exception goes with the rule it suspends for a while.
+ */
 export function linkedRules(root: string): [string, string][] {
   const db = open(root, false);
   if (db === null) return [];
   return (db.prepare(`SELECT DISTINCT a.knowledge_id AS f, b.knowledge_id AS t FROM relations r JOIN versions a ON a.id = r.from_id JOIN versions b ON b.id = r.to_id
-    WHERE json_extract(r.json, '$.kind') = 'read_with'`).all() as { f: string; t: string }[]).map(r => [r.f, r.t]);
+    WHERE json_extract(r.json, '$.kind') IN ('read_with', 'exception_to')`).all() as { f: string; t: string }[]).map(r => [r.f, r.t]);
 }
 
 export function saveSentenceVectors(root: string, model: string, rows: { knowledge_id: string; version_id: string; vector: Float32Array }[]): void {

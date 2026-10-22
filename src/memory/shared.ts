@@ -16,6 +16,7 @@ import { ANCHOR, anchorKnowledge, knowledgeOrigin } from "./visibility.js";
 import { backgroundUpkeep } from "./upkeep.js";
 import { accessGated, activeAccess, denyAccess, withholdMemory, type AccessReason, type OrganizationRef } from "../storage/access.js";
 import { originRemote } from "../repository/remote.js";
+import { cleanName } from "../storage/local-identity.js";
 
 export interface SharedConfig { enabled: boolean; endpoint: string; repo: string; cursor: number; pushed: string[]; adopted: string[] }
 type Operation = Record<string, unknown> & { type: "learn" | "transition" | "event" };
@@ -27,6 +28,8 @@ const SYNC_LOCK_STALE_MS = 5 * 60_000;
 const PUSH_CHUNK = 100;
 const ID = /^[\w:.-]{1,200}$/;
 const zoneOk = (z: string) => z.length > 0 && z.length <= 200 && !/[\\\x00-\x1f]/.test(z) && !/^(?:[A-Za-z]:|\/)/.test(z) && !z.split("/").includes("..");
+// A teammate's period, kept only when it reads as an instant.
+const instant = (v: unknown): string | null => typeof v === "string" && /^\d{4}-\d{2}-\d{2}T/.test(v) && Number.isFinite(Date.parse(v)) ? v : null;
 
 export function sharedConfig(root: string): SharedConfig | null {
   try { return JSON.parse(readFileSync(configPath(root), "utf8")); } catch { return null; }
@@ -120,7 +123,7 @@ export function pendingOperations(store: KnowledgeStore, config: SharedConfig, u
     const eventIds = v.event_ids.filter(id => events.has(id) && ID.test(id)).slice(0, 16);
     if (v.version === 1) {
       const o = origin(store, v);
-      operations.push({ type: "learn", knowledge_id: v.knowledge_id, version: { id: v.id, kind: v.kind, state: v.state, content: v.content, zones: v.zones, recorded_at: v.recorded_at }, origin: { branch: o.branch, commit: o.commit?.slice(0, 64) ?? null, session: o.session, learned_at: v.recorded_at }, event_ids: eventIds });
+      operations.push({ type: "learn", knowledge_id: v.knowledge_id, version: { id: v.id, kind: v.kind, state: v.state, content: v.content, zones: v.zones, recorded_at: v.recorded_at, ...(v.valid_from ? { valid_from: v.valid_from } : {}), ...(v.valid_until ? { valid_until: v.valid_until } : {}) }, origin: { branch: o.branch, commit: o.commit?.slice(0, 64) ?? null, session: o.session, learned_at: v.recorded_at }, event_ids: eventIds });
     } else {
       if (!v.previous_version_id || !shared.has(v.previous_version_id)) continue;
       operations.push({ type: "transition", knowledge_id: v.knowledge_id, from_version_id: v.previous_version_id, version: { id: v.id, state: v.state, content: v.content, zones: v.zones }, event_ids: eventIds });
@@ -163,9 +166,11 @@ export function adoptRecords(current: KnowledgeStore, repo: string, records: Pul
   const eventIds = new Set(current.events.map(e => e.id)), versionIds = new Set(current.versions.map(v => v.id));
   const heads = new Map<string, KnowledgeVersion>();
   for (const v of current.versions) if ((heads.get(v.knowledge_id)?.version ?? 0) < v.version) heads.set(v.knowledge_id, v);
-  const sourceFor = (actor: string) => {
-    const id = `shared:${digest(`${repo}:${actor}`)}`;
-    if (!current.sources.some(s => s.id === id) && !batch.sources.some(s => s.id === id)) batch.sources.push({ id, kind: "document", reference: `kurtel-shared/${repo}/${actor}`, revision: null, recorded_at: now, content: JSON.stringify({ protocol: "kurtel-shared-v1", repo, actor }) });
+  // The server gives the author's name with what they taught: it is kept on the source, shown with the rule.
+  const sourceFor = (actor: string, name?: unknown) => {
+    const authorName = cleanName(name);
+    const id = `shared:${digest(authorName ? `${repo}:${actor}:${authorName}` : `${repo}:${actor}`)}`;
+    if (!current.sources.some(s => s.id === id) && !batch.sources.some(s => s.id === id)) batch.sources.push({ id, kind: "document", reference: `kurtel-shared/${repo}/${actor}`, revision: null, recorded_at: now, content: JSON.stringify({ protocol: "kurtel-shared-v1", repo, actor, ...(authorName ? { author_name: authorName } : {}) }) });
     return id;
   };
   for (const { type, record } of records) {
@@ -179,8 +184,8 @@ export function adoptRecords(current: KnowledgeStore, repo: string, records: Pul
     const head = heads.get(record.knowledge_id);
     if (head && head.state === record.state && head.content === record.content && JSON.stringify(head.zones) === JSON.stringify(record.zones)) continue;
     const version: KnowledgeVersion = { id: record.id, knowledge_id: record.knowledge_id, version: (head?.version ?? 0) + 1, previous_version_id: head?.id ?? null,
-      kind: record.kind, state: record.state, content: record.content, zones: record.zones, source_ids: head ? head.source_ids : [sourceFor(record.author ?? record.actor)],
-      event_ids: (record.event_ids as string[]).filter(id => eventIds.has(id)), recorded_at: record.recorded_at ?? now, valid_from: null, valid_until: null, legacy_pattern_id: null, legacy_score: null,
+      kind: record.kind, state: record.state, content: record.content, zones: record.zones, source_ids: head ? head.source_ids : [sourceFor(record.author ?? record.actor, record.author_name)],
+      event_ids: (record.event_ids as string[]).filter(id => eventIds.has(id)), recorded_at: record.recorded_at ?? now, valid_from: instant(record.valid_from), valid_until: instant(record.valid_until), legacy_pattern_id: null, legacy_score: null,
       ...(record.origin?.learned_at ? { origin: { branch: record.origin.branch ?? null, commit: record.origin.commit ?? null, learned_at: record.origin.learned_at } } : {}) };
     batch.versions.push(version); heads.set(version.knowledge_id, version); versionIds.add(version.id); adopted.push(version.id);
   }

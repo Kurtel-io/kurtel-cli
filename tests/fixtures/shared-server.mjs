@@ -2,22 +2,23 @@ import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 
 // Stand-in for the shared knowledge server in tests; KURTEL_TEST_SHARED runs them against a real one.
-export async function createSharedServer({ tokens }) {
+export async function createSharedServer({ tokens, names = {} }) {
   const bodies = [];
   let handle, service;
   const rows = [];
   if (process.env.KURTEL_TEST_SHARED) {
     const { createMemoryService, createFileMemoryStore } = await import(new URL(`file:///${process.env.KURTEL_TEST_SHARED.replace(/\\/g, '/')}`).href);
     const { mkdtempSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
-    service = createMemoryService({ store: await createFileMemoryStore(join(mkdtempSync(join(tmpdir(), 'kurtel-shared-')), 'records.jsonl')) });
-    handle = (actor, body) => service.handle({ scope: 'org:test', actor, write: true }, body);
+    service = createMemoryService({ store: await createFileMemoryStore(join(mkdtempSync(join(tmpdir(), 'kurtel-shared-')), 'records.jsonl')), names: async ids => new Map(ids.filter(id => names[id]).map(id => [id, names[id]])) });
+    handle = (actor, body) => service.handle({ repository: 'org:test', actor, write: true }, body);
   } else {
     const head = (repo, k) => rows.filter(r => r.repo === repo && r.type === 'version' && r.record.knowledge_id === k).at(-1)?.record;
     const add = (repo, type, record) => rows.push({ repo, type, record, seq: rows.length + 1 });
     handle = async (actor, body) => {
       if (body.action === 'pull') {
         const page = rows.filter(r => r.repo === body.repo && r.seq > body.since).slice(0, 500);
-        return { protocol: 1, records: page.map(({ seq, type, record }) => ({ seq, type, record })), cursor: page.at(-1)?.seq ?? body.since, more: false };
+        // As the server does: the author's name is sent with their knowledge, not stored in it.
+        return { protocol: 1, records: page.map(({ seq, type, record }) => ({ seq, type, record: type === 'version' && names[record.author] ? { ...record, author_name: names[record.author] } : record })), cursor: page.at(-1)?.seq ?? body.since, more: false };
       }
       const results = body.operations.map(op => {
         const exists = id => rows.some(r => r.repo === body.repo && r.record.id === id);

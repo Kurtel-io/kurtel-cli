@@ -11,6 +11,7 @@ const base = mkdtempSync(join(tmpdir(), 'kurtel-context-'));
 const root = join(base, 'repo'), home = join(base, 'home'); mkdirSync(root); mkdirSync(home);
 process.env.HOME = home; process.env.USERPROFILE = home;
 const { compactContext } = await import('../dist/context/compact.js');
+const { refreshSentenceVectors } = await import('../dist/context/selection.js');
 const { countTokens, packContext } = await import('../dist/context/budget.js');
 const { deliverContext, resetContext } = await import('../dist/context/delivery.js');
 const { activateRepo, setMemoryEnabled } = await import('../dist/storage/state.js');
@@ -71,9 +72,16 @@ assert(!JSON.stringify(ledger).includes('Billing constraint'), 'ledger stores id
 const now = new Date().toISOString();
 const version = (id, state) => ({ id, knowledge_id: id, version: 1, previous_version_id: null, kind: 'constraint', state, content: `Billing validation ${id}`, zones: ['src'], source_ids: ['proof'], event_ids: [], recorded_at: now, valid_from: null, valid_until: null, legacy_pattern_id: null, legacy_score: null });
 appendKnowledge(root, () => ({ ...emptyBatch(), sources: [{ id: 'proof', kind: 'document', reference: 'review:billing', revision: '1', content: 'SECRET SOURCE CONTENT', recorded_at: now }], versions: [version('active-one', 'active'), version('proposed-two', 'proposed')] }));
-let mode = 'ok', requests = 0, lastRequest = null, reading = null, lastReading = null;
+let mode = 'ok', requests = 0, lastRequest = null, reading = null, lastReading = null, embedding = null;
+const embedded = [];
 const server = createServer(async (req, res) => {
   let body = ''; for await (const chunk of req) body += chunk;
+  // The embedding service: none unless a test sets `embedding`, a vector per text.
+  if (req.url === '/v1/embed') {
+    const input = JSON.parse(body); embedded.push(input.texts); assert(!body.includes('SECRET SOURCE CONTENT'));
+    if (!embedding) { res.writeHead(501); res.end('{"error":"embed_not_configured"}'); return; }
+    res.end(JSON.stringify({ protocol: 1, model: 'fake-embed@3', vectors: input.texts.map(embedding) })); return;
+  }
   // The reading service: none unless a test sets `reading`, a score per rule text.
   if (req.url === '/v1/rank') {
     lastReading = JSON.parse(body); assert(!body.includes('SECRET SOURCE CONTENT'));
@@ -238,6 +246,28 @@ try {
   resetContext(root, 'reading-broken');
   result = await compactContext(root, index, 'inspect src/billing.ts', { session: 'reading-broken' });
   assert.equal(result.chosen, false); assert(memoryOf(result).length > 0 && memoryOf(result).length <= 4);
+
+  // Sentence vectors from the engine's embedding service: a rule found by meaning, though it shares no word with
+  // the message. The message is embedded at each message, the rules once, mostly in the background.
+  const question = 'In src/billing.ts, how should money given back to a buyer appear?';
+  const refunds = text => text.startsWith('Refunds are recorded');
+  // More rules sharing the message's words than the pool holds: words alone leave the refund rule out.
+  appendKnowledge(root, () => ({ ...emptyBatch(), versions: Array.from({ length: 45 }, (_, i) => ({ ...version(`buyer-${i}`, 'active'), content: `In src/billing.ts the money shown to a buyer in report ${i} should appear rounded` })) }));
+  embedding = text => text === question || refunds(text) ? [1, 0, 0] : [0, 1, 0];
+  reading = text => refunds(text) ? .9 : .1;
+  resetContext(root, 'meaning-1');
+  await compactContext(root, index, question, { session: 'meaning-1' });
+  assert.deepEqual(embedded.at(-1), [question], 'first message: the service names its model, no rule vector yet');
+  assert((await refreshSentenceVectors(root)) > 0); assert.equal(await refreshSentenceVectors(root), 0, 'each rule embedded once');
+  resetContext(root, 'meaning-2');
+  result = await compactContext(root, index, question, { session: 'meaning-2' });
+  assert.deepEqual(embedded.at(-1), [question], 'then only the message');
+  assert(lastReading.rules.some(refunds) && memoryOf(result).some(i => refunds(i.text.split(': ').at(-1)) || i.text.includes('Refunds are recorded')), 'found by meaning, then read and delivered');
+  // No embedding service: words alone, as before.
+  embedding = null;
+  resetContext(root, 'meaning-none');
+  result = await compactContext(root, index, question, { session: 'meaning-none' });
+  assert.equal(result.chosen, true); assert(!lastReading.rules.some(refunds), 'by words alone the refund rule is not even read');
   reading = null;
 } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 console.log('PASS: pre-edit gate once per file, inferred scope, abstention, pointers, usage journal, lock recovery, token cap, graph-only default, omission without truncation, retry/dedup/reset, revision invalidation, scoped hybrid retrieval, one minimized HTTP batch, investigation and safe degradation.');

@@ -8,7 +8,7 @@ import { accessGated } from "../storage/access.js";
 import { currentBranch, headCommit } from "../repository/git.js";
 import { observeTool } from "../memory/tool-observation.js";
 import { injectedMemories, priorInjectionHints, recordCapturedContext } from "../storage/usage.js";
-import { localIdentity } from "../storage/local-identity.js";
+import { cleanName, localIdentity, speakerName } from "../storage/local-identity.js";
 import { usageEvidence } from "../memory/maintenance.js";
 import { captureIdentity } from "../memory/team.js";
 
@@ -23,6 +23,8 @@ export interface CaptureInput {
   tool_response?: unknown;
   error?: string;
   reason?: string;
+  /** Who wrote the user's message, when the caller knows better than this machine (an agent serving several people). */
+  speaker?: string;
 }
 
 interface CapturedEvent { source: Source; event: KnowledgeEvent }
@@ -61,7 +63,7 @@ function scrub(value: string): { text: string; truncated: boolean; redacted: boo
 }
 
 /** Capture only hook payloads; never open transcript_path or a path supplied by a tool. */
-export function captureHook(root: string, hook: string, input: CaptureInput, provider: "claude-code" | "codex" = "claude-code"): void {
+export function captureHook(root: string, hook: string, input: CaptureInput, provider: "claude-code" | "codex" = "claude-code", at?: string): void {
   if (!repoActivated(root) || !memoryEnabled(root) || !captureEnabled(root, provider)) return;
   if (typeof input.session_id !== "string" || !input.session_id || input.session_id.length > 256) return;
   const session = input.session_id;
@@ -89,13 +91,16 @@ export function captureHook(root: string, hook: string, input: CaptureInput, pro
   const stable = role === "tool" ? toolId : ["user", "assistant"].includes(role) ? promptId : null;
   // Identical text without a provider ID may be two real turns: never merge by content alone.
   const key = digest(JSON.stringify([session, hook, stable ?? randomUUID(), sanitized.text]));
-  const now = new Date().toISOString();
+  // A caller handing over a whole turn at once dates its messages itself, to keep their order.
+  const now = at ?? new Date().toISOString();
   const teamIdentity = role === "user" ? captureIdentity(root) : null;
+  // Shown to colleagues with what this person said: "c'est moi qui gère Cholet" means nothing without a name.
+  const authorName = role === "user" ? cleanName(input.speaker) ?? speakerName() : null;
   const sourceId = `capture:${key}`;
   const observed = role === "tool" ? observeTool(root, input.tool_name ?? "unknown", input.tool_input ?? {}, input.tool_response, hook === "post-tool-use-failure") : undefined;
   const observation = observed ? { ...observed, targets: observed.targets.map(path => scrub(path).text), ...(observed.command ? { command: scrub(observed.command).text } : {}) } : undefined;
   const source: Source = { id: sourceId, kind: "conversation", reference: `${provider}/session/${encodeURIComponent(session)}/${hook}/${key}`, revision: stable, recorded_at: now,
-    content: JSON.stringify({ provider, hook, role, status, local_author: localIdentity(true), ...(teamIdentity ? { team_identity: teamIdentity } : {}), prompt_id: promptId, tool_use_id: toolId, branch: currentBranch(root), commit: headCommit(root), observation, ...sanitized }) };
+    content: JSON.stringify({ provider, hook, role, status, local_author: localIdentity(true), ...(authorName ? { author_name: authorName } : {}), ...(teamIdentity ? { team_identity: teamIdentity } : {}), prompt_id: promptId, tool_use_id: toolId, branch: currentBranch(root), commit: headCommit(root), observation, ...sanitized }) };
   const event: KnowledgeEvent = { id: `capture-event:${key}`, kind, source_ids: [sourceId], actor: role === "user" ? teamIdentity?.actor ?? null : role, session_id: session, occurred_at: null, recorded_at: now, content: sanitized.text };
   const dir = sessionPath(root, session);
   mkdirSync(dir, { recursive: true, mode: 0o700 });

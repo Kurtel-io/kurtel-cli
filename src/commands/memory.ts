@@ -3,6 +3,8 @@ import { Spinner } from "../ui/spinner.js";
 import { repoRoot, headCommit } from "../repository/git.js";
 import { loadIndex, indexGeneratedAt } from "../storage/graph-index.js";
 import { kurtelEnabled, memoryEnabled, memorySwitchOn, setMemoryEnabled, memoryDisabledGlobally, repoActivated, activateRepo } from "../storage/state.js";
+import { readKnowledge } from "../storage/knowledge.js";
+import { reactivateRule, replacedRules } from "../memory/rule-links.js";
 import { accessGated, accessMemory } from "../storage/access.js";
 import { injectionLogPath, modelsDir } from "../storage/paths.js";
 import { cloudAllowed } from "../security/network.js";
@@ -109,6 +111,25 @@ export async function memoryCommand(
       setMemoryEnabled(root, false);
       console.log(`${symbols.check} Kurtel memory ${c.yellow("disabled")} for this repo ${c.dim("(the codebase graph stays on; kurtel off turns Kurtel off entirely)")}.`);
       return;
+
+    case "reactivate": {
+      // A replacement was wrong: the replaced rule comes back.
+      if (!args[0]) {
+        const replaced = replacedRules(readKnowledge(root));
+        if (!replaced.length) { console.log(c.dim("No rule was replaced by a newer one.")); return; }
+        for (const v of replaced) console.log(`${c.indigo(v.knowledge_id.slice(0, 20))}  ${c.dim(v.recorded_at.slice(0, 10))}  ${v.content.replace(/\s+/g, " ").slice(0, 120)}`);
+        console.log(c.dim("\nBring one back: kurtel memory reactivate <id>"));
+        return;
+      }
+      try {
+        const v = reactivateRule(root, args[0]);
+        console.log(`${symbols.check} Active again: ${v.content.replace(/\s+/g, " ").slice(0, 160)}`);
+      } catch (e) {
+        console.log(`${c.red(symbols.cross)} ${e instanceof Error ? e.message : String(e)}`);
+        process.exitCode = 1;
+      }
+      return;
+    }
 
     case "sync": {
       // Shared knowledge: send what was judged, receive teammates' knowledge.
@@ -264,7 +285,7 @@ export async function memoryCommand(
 
     default:
       console.log(
-        `${c.red(symbols.cross)} Unknown action ${c.white(action)}. Try ${c.indigo("status")}, ${c.indigo("on")}, ${c.indigo("off")}, ${c.indigo("sync")}, ${c.indigo("share")}, ${c.indigo("preview")}, or ${c.indigo("log")}.`
+        `${c.red(symbols.cross)} Unknown action ${c.white(action)}. Try ${c.indigo("status")}, ${c.indigo("on")}, ${c.indigo("off")}, ${c.indigo("sync")}, ${c.indigo("share")}, ${c.indigo("preview")}, ${c.indigo("log")}, or ${c.indigo("reactivate")}.`
       );
       process.exitCode = 1;
   }

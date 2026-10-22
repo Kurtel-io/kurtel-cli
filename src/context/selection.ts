@@ -1,9 +1,12 @@
 // Which rules go with a message. Words (BM25) and sentence vectors pick a pool; the engine's reading service scores
 // it and its line says which rules the message needs, whatever their number; a rule brings the rules linked to it
 // (recorded when it was learned, or else the closest one). Without the service, the local reading model orders the pool and a fixed number is delivered.
-import { activeRules, linkedRules, saveSentenceVectors } from "../storage/knowledge.js";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { activeRules, knowledgePath, linkedRules, saveSentenceVectors } from "../storage/knowledge.js";
 import { policyFetch } from "../security/network.js";
 import { engineTarget, noticeMemoryRefusal, type EngineTarget } from "../memory/engine.js";
+import { inForce } from "../memory/validity.js";
 import { SENTENCE_MODEL, localModelsInstalled, readingScores, sentenceVectors } from "./local-models.js";
 
 // The reading model scores the best of the two first lists, half from each.
@@ -18,6 +21,8 @@ const CROWD_FROM = 16, CROWD_SHARE = 0.75, CROWD_KEPT = 4;
 const SERVICE_MS = 3000, MESSAGE_LIMIT = 24000, RULE_LIMIT = 8000;
 // Rules without a vector that one message may compute on the way; the rest wait for the background.
 const VECTORS_PER_MESSAGE = 48;
+// The embedding service: its answer to a message, and the batches computed in the background.
+const EMBED_MS = 1500, EMBED_BACKGROUND_MS = 15000, EMBED_BATCH = 64;
 const TIME_LIMIT_MS = Number(process.env.KURTEL_SELECTION_MS ?? 4000);
 
 export interface Rule { content: string; vector: Float32Array | null; depth: number }
@@ -139,8 +144,45 @@ export async function rankRules(message: string, rules: Rule[], messageVector: F
   return [...two, ...added, ...merged.filter(i => !two.includes(i) && !added.includes(i))];
 }
 
-/** Computes the sentence vectors still missing, at most `limit`; returns how many. */
+/** The engine's embedding service, when there is one: it then gives every sentence vector, the local models none. */
+function embedTarget(root: string): EngineTarget | null {
+  try { return engineTarget(root, "embed"); } catch { return null; }
+}
+
+// The service names its model and size; vectors of another model are not comparable, so the name is kept.
+const modelFile = (root: string) => join(dirname(knowledgePath(root)), "embed-model.json");
+function serviceModel(root: string): string | null {
+  try { const model = JSON.parse(readFileSync(modelFile(root), "utf8")).model; return typeof model === "string" && model ? model : null; } catch { return null; }
+}
+
+/** One vector per text from the engine's embedding service; throws when it has none or does not answer. */
+async function serviceVectors(root: string, target: EngineTarget, texts: string[], timeout: number): Promise<{ model: string; vectors: Float32Array[] }> {
+  const body = JSON.stringify({ protocol: 1, texts: texts.map(t => t.slice(0, MESSAGE_LIMIT)), ...target.where });
+  const response = await policyFetch(target.url, { method: "POST", redirect: "error", signal: AbortSignal.timeout(timeout), headers: { "content-type": "application/json", authorization: `Bearer ${target.token}` }, body }, target.purpose);
+  if (!response.ok) { await noticeMemoryRefusal(root, target, response); throw new Error(`embed_http_${response.status}`); }
+  const result = await response.json() as { protocol: number; model: string; vectors: number[][] };
+  if (result.protocol !== 1 || typeof result.model !== "string" || !result.model || !Array.isArray(result.vectors) || result.vectors.length !== texts.length
+    || !result.vectors.every(v => Array.isArray(v) && v.length > 0 && v.length === result.vectors[0].length && v.every(Number.isFinite))) throw new Error("invalid_embed_response");
+  if (result.model !== serviceModel(root)) try { writeFileSync(modelFile(root), JSON.stringify({ model: result.model }) + "\n"); } catch { /* Asked again next time. */ }
+  return { model: result.model, vectors: result.vectors.map(v => Float32Array.from(v)) };
+}
+
+/** Computes the sentence vectors still missing, at most `limit`, through the engine or else the local models; returns how many. */
 export async function refreshSentenceVectors(root: string, limit = Number.POSITIVE_INFINITY): Promise<number> {
+  const target = embedTarget(root);
+  if (target) {
+    let done = 0, model = serviceModel(root) ?? "";
+    while (done < limit) {
+      const batch = activeRules(root, model).filter(r => !r.vector).slice(0, Math.min(EMBED_BATCH, limit - done));
+      if (!batch.length) break;
+      const answer = await serviceVectors(root, target, batch.map(r => r.content), EMBED_BACKGROUND_MS);
+      // The service may have changed model: what is missing is then counted in its vectors.
+      model = answer.model;
+      saveSentenceVectors(root, model, batch.map((r, j) => ({ knowledge_id: r.knowledge_id, version_id: r.version_id, vector: answer.vectors[j] })));
+      done += batch.length;
+    }
+    return done;
+  }
   if (!localModelsInstalled()) return 0;
   const missing = activeRules(root, SENTENCE_MODEL.id).filter(r => !r.vector).slice(0, limit);
   // Saved batch by batch: a process cut short keeps what it did.
@@ -162,15 +204,26 @@ export interface Selection { ids: string[]; chosen: boolean }
 export async function rankedMemory(root: string, message: string, depthOf: (zones: string[]) => number, skip: Set<string>): Promise<Selection | null> {
   let target: EngineTarget | null = null;
   try { target = engineTarget(root, "rank"); } catch { /* Unreadable configuration: no service. */ }
-  const local = localModelsInstalled();
+  const embed = embedTarget(root), local = !embed && localModelsInstalled();
   if (!target && !local) return null;
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), TIME_LIMIT_MS); timer.unref?.(); });
   const work = (async (): Promise<Selection | null> => {
-    if (local) await refreshSentenceVectors(root, VECTORS_PER_MESSAGE);
-    const rules = activeRules(root, SENTENCE_MODEL.id).filter(r => !skip.has(r.version_id));
+    let messageVector: Float32Array | null = null, model = SENTENCE_MODEL.id;
+    if (embed) {
+      // One request: the message, and the rules still without a vector (most were computed in the background).
+      const known = serviceModel(root), missing = known ? activeRules(root, known).filter(r => !r.vector && !skip.has(r.version_id)).slice(0, VECTORS_PER_MESSAGE) : [];
+      try {
+        const answer = await serviceVectors(root, embed, [message, ...missing.map(r => r.content)], EMBED_MS);
+        messageVector = answer.vectors[0]; model = answer.model;
+        if (answer.model === known) saveSentenceVectors(root, model, missing.map((r, j) => ({ knowledge_id: r.knowledge_id, version_id: r.version_id, vector: answer.vectors[j + 1] })));
+      } catch { /* No embedding service, or no answer: words alone. */ }
+    } else if (local) {
+      await refreshSentenceVectors(root, VECTORS_PER_MESSAGE);
+      messageVector = (await sentenceVectors([message], "query"))[0];
+    }
+    const now = Date.now(), rules = activeRules(root, model).filter(r => !skip.has(r.version_id) && inForce(r, now));
     if (!rules.length) return { ids: [], chosen: false };
-    const messageVector = local ? (await sentenceVectors([message], "query"))[0] : null;
     const shaped = rules.map(r => ({ content: r.content, vector: r.vector, depth: depthOf(r.zones) }));
     // Links recorded when a rule was learned, between the rules still to deliver.
     const at = new Map(rules.map((r, i) => [r.knowledge_id, i])), links = new Map<number, number[]>();
@@ -185,7 +238,7 @@ export async function rankedMemory(root: string, message: string, depthOf: (zone
       try { return { ids: (await selectRules(message, shaped, messageVector, texts => serviceReading(root, service, message, texts), tied)).map(i => rules[i].version_id), chosen: true }; }
       catch { /* No reading service, or no answer: the local order, or words. */ }
     }
-    if (!messageVector) return null;
+    if (!messageVector || !local) return null;
     return { ids: (await rankRules(message, shaped, messageVector, texts => readingScores(message, texts), tied)).map(i => rules[i].version_id), chosen: false };
   })().catch(() => null);
   try { return await Promise.race([work, late]); } finally { clearTimeout(timer); }

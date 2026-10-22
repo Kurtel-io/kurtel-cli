@@ -2,7 +2,7 @@ import { apiUrl, loadConfig } from "../lib/config.js";
 import { accessGated, activeAccess, withholdMemory } from "../storage/access.js";
 import { learningConfig } from "./session-learning.js";
 
-export type EngineOperation = "extract" | "correction" | "context" | "rank" | "link";
+export type EngineOperation = "extract" | "correction" | "context" | "rank" | "link" | "embed";
 
 /** Where one request to the learning engine goes: URL, bearer credential, fields added to the body. */
 export interface EngineTarget {
