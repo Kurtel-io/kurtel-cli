@@ -172,7 +172,7 @@ export async function learnSession(root: string, session: string): Promise<{ pro
   if (fd === null) throw new Error("Session learning already running for this session");
   try {
     ingestSession(root, session);
-    const request = prepareExtraction(readKnowledge(root), session, { space: memorySpace() });
+    const request = prepareExtraction(readKnowledge(root), session, { space: memorySpace(root) });
     if (!request) {
       try { purgeCaptureText(root, session); } catch { /* Store busy: the next hook erases it. */ }
       return { processed: 0, candidates: 0, lessons: 0 };

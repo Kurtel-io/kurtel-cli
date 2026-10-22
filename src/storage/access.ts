@@ -21,6 +21,7 @@ export interface AccessEntry {
   repository_id?: string;
   role?: string;
   memory?: boolean;
+  space?: boolean;                   // a space: the memory of a team's assistants, not of a code repository
   organizations?: OrganizationRef[];
   chosen?: string;                   // kurtel org use
 }
@@ -81,6 +82,11 @@ export function activeAccess(root: string): (AccessEntry & { organization: Organ
 /** Whether the organization's plan includes memory. */
 export function accessMemory(root: string): boolean {
   return activeAccess(root)?.memory === true;
+}
+
+/** Whether the server declared this memory a space. */
+export function accessSpace(root: string): boolean {
+  return activeAccess(root)?.space === true;
 }
 
 /** memory_not_enabled from the server: graph only in every folder of that repository; access and data kept. */
@@ -176,7 +182,7 @@ export async function checkAccess(root: string, options: { timeoutMs?: number } 
   let body: Record<string, any>;
   try { body = await response.json() as Record<string, any>; } catch { return previous; }
   if (body.active === true && typeof body.repository_id === "string" && body.organization?.id) {
-    return save(root, { remote, active: true, checked_at: now, organization: { id: body.organization.id, slug: body.organization.slug, name: body.organization.name }, repository_id: body.repository_id, role: body.role, memory: body.memory === true, ...keep });
+    return save(root, { remote, active: true, checked_at: now, organization: { id: body.organization.id, slug: body.organization.slug, name: body.organization.name }, repository_id: body.repository_id, role: body.role, memory: body.memory === true, ...(body.kind === "space" ? { space: true } : {}), ...keep });
   }
   if (body.active === false && typeof body.reason === "string") {
     return save(root, { remote, active: false, checked_at: now, reason: body.reason as AccessReason, ...(Array.isArray(body.organizations) ? { organizations: body.organizations } : {}), ...keep });

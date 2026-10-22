@@ -25,7 +25,7 @@ type Found = { kind: "read_with" | "supersedes" | "exception_to"; from: string; 
 export async function linkNewRules(root: string, since: string): Promise<number> {
   const target = engineTarget(root, "link");
   if (!target || !memoryEnabled(root)) return 0;
-  const space = memorySpace();
+  const space = memorySpace(root);
   // With the local models, closeness also counts meaning.
   try { await refreshSentenceVectors(root); } catch { /* Words alone. */ }
   const rules = activeRules(root, SENTENCE_MODEL.id);

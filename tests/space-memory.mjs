@@ -1,16 +1,21 @@
 // A space (a team's memory, not a code repository): dated facts, a fact replaced by a newer one, a temporary
-// exception delivered with the rule it suspends. Provisional switch: KURTEL_MEMORY_SPACE=1.
+// exception delivered with the rule it suspends. The server says a memory is a space when it grants access.
 process.env.KURTEL_ACTIVATION ??= "markers";
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
-const fixture = mkdtempSync(join(tmpdir(), 'kurtel-space-'));
+const fixture = realpathSync.native(mkdtempSync(join(tmpdir(), 'kurtel-space-')));
 const root = join(fixture, 'repo'), home = join(fixture, 'home'); mkdirSync(root); mkdirSync(home);
 process.env.HOME = home; process.env.USERPROFILE = home;
 const { activateRepo, memorySpace } = await import('../dist/storage/state.js');
-delete process.env.KURTEL_MEMORY_SPACE;
+execFileSync('git', ['init', '-q'], { cwd: root });
+execFileSync('git', ['remote', 'add', 'origin', 'https://space.kurtel.io/acme/ventes'], { cwd: root });
+// The access answer kept for this folder, as the server gives it: a space or not.
+const granted = space => { mkdirSync(join(home, '.kurtel'), { recursive: true }); writeFileSync(join(home, '.kurtel', 'access.json'), JSON.stringify({ version: 1, entries: { [process.platform === 'win32' ? root.toLowerCase() : root]: {
+  remote: 'space.kurtel.io/acme/ventes', active: true, checked_at: new Date().toISOString(), organization: { id: 'o1', slug: 'acme', name: 'Acme' }, repository_id: 'r1', role: 'member', memory: true, ...(space ? { space: true } : {}) } } })); };
 const { captureHook, setCaptureEnabled } = await import('../dist/integrations/claude-code/capture.js');
 const { readKnowledge, activeRules, linkedRules } = await import('../dist/storage/knowledge.js');
 const { configureLearning, learnSession } = await import('../dist/memory/session-learning.js');
@@ -59,7 +64,8 @@ const delivered = async prompt => (await compactContext(root, null, prompt, { se
 
 try {
   // 2. A code repository: nothing new is sent, and the engine's days, if any, are not asked for.
-  assert.equal(memorySpace(), false);
+  granted(false);
+  assert.equal(memorySpace(root), false);
   const oldLine = await learn("Le numéro d'astreinte est le 02 55 01 01 47.");
   await learn('Marc valide les commandes de sondes.');
   assert(extracted.every(b => !('space' in b) && !('date' in b)), 'code mode: no space, no date');
@@ -67,8 +73,8 @@ try {
   assert.equal(oldLine.valid_from, null); assert.equal(oldLine.valid_until, null);
 
   // 3. A space: the request carries the day; a fact that replaces another supersedes it.
-  process.env.KURTEL_MEMORY_SPACE = 'yes'; assert.equal(memorySpace(), false, 'only 1 turns it on');
-  process.env.KURTEL_MEMORY_SPACE = '1';
+  process.env.KURTEL_MEMORY_SPACE = '1'; assert.equal(memorySpace(root), false, 'the old switch does nothing');
+  granted(true); assert.equal(memorySpace(root), true);
   answer = body => ({ linked: [], replaced: body.rule.text.includes('09 12') ? body.candidates.filter(c => c.text.includes('01 47')).map(c => c.id) : [], exceptions: [] });
   const newLine = await learn("Le numéro d'astreinte est désormais le 02 55 01 09 12.");
   assert.equal(extracted.at(-1).space, true); assert.equal(extracted.at(-1).date, day(0));
@@ -119,4 +125,4 @@ try {
   assert.equal(batch.versions.find(v => v.knowledge_id === 'dated').valid_until, julie.valid_until);
   assert.equal(batch.versions.find(v => v.knowledge_id === 'odd').valid_from, null, 'not an instant: dropped');
 } finally { await new Promise(resolve => server.close(resolve)); }
-console.log('PASS: space switch, validity days, supersession, reactivation, temporary exception, delivery within the period, shared periods, code path unchanged.');
+console.log('PASS: space declared by the server, validity days, supersession, reactivation, temporary exception, delivery within the period, shared periods, code path unchanged.');
