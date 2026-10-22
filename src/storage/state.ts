@@ -5,7 +5,7 @@ import type { MemoryState } from "../domain/types.js";
 import { loadConfig } from "../lib/config.js";
 import { statePath, projectConfigPath, reportPath } from "./paths.js";
 import { readJSON, writeJSON } from "./json.js";
-import { accessGated, accessMemory, activeAccess } from "./access.js";
+import { accessGated, accessMemory, accessSpace, activeAccess } from "./access.js";
 
 const EMPTY_STATE: MemoryState = { enabled: true, session_zones: {} };
 
@@ -53,11 +53,10 @@ export function setMemoryEnabled(root: string, enabled: boolean): void {
 
 /**
  * A space: the memory of a team's assistants rather than of a code repository (dated facts, a fact replaced by a
- * newer one). Undocumented switch for tests and local trials (KURTEL_MEMORY_SPACE=1), to be removed once the memory
- * carries its kind on the server.
+ * newer one). The server says so when it grants access.
  */
-export function memorySpace(): boolean {
-  return process.env.KURTEL_MEMORY_SPACE === "1";
+export function memorySpace(root: string): boolean {
+  return accessSpace(root);
 }
 
 export function memoryDisabledGlobally(): boolean {
