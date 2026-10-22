@@ -23,6 +23,7 @@ import { codeObservations } from "../storage/code-observations.js";
 import { teamContext } from "../memory/team.js";
 import { suspendedVersions } from "../memory/automatic.js";
 import { hiddenVersions } from "../memory/visibility.js";
+import { inForce } from "../memory/validity.js";
 
 export type ContextMode = "action" | "investigation";
 /** explicit: paths given or cited; inferred: deduced from the graph; none: unknown. */
@@ -56,6 +57,17 @@ function statedBy(store: KnowledgeStore, v: KnowledgeVersion): { corrected: bool
   const corrected = v.event_ids.some(id => id.startsWith("correction:"));
   const said = store.events.some(e => v.event_ids.includes(e.id) && e.id.startsWith("capture-event:") && roleOf(store.sources.find(s => s.id === e.source_ids[0])) === "user");
   return { corrected, said, person: corrected || said };
+}
+
+/** The name of the person who said it, when their machine, their agent or the server gave one. */
+function authorOf(store: KnowledgeStore, v: KnowledgeVersion): string | null {
+  const events = v.event_ids.map(id => store.events.find(e => e.id === id)).filter(e => !!e);
+  for (const id of [...v.source_ids, ...events.flatMap(e => e.source_ids)]) {
+    const content = store.sources.find(s => s.id === id)?.content;
+    if (!content) continue;
+    try { const name = JSON.parse(content).author_name; if (typeof name === "string" && name) return name; } catch { /* not JSON */ }
+  }
+  return null;
 }
 
 /** A cited path counts when it starts in the repository; "application/json" or "and/or" do not. */
@@ -167,7 +179,7 @@ export async function compactContext(root: string, index: CodebaseIndex | null, 
     const latest = new Map<string, number>();
     for (const v of store.versions) latest.set(v.knowledge_id, Math.max(latest.get(v.knowledge_id) ?? 0, v.version));
     const now = Date.now();
-    for (const v of store.versions) if (v.valid_until && Date.parse(v.valid_until) <= now) ineligible.add(v.id);
+    for (const v of store.versions) if (!inForce(v, now)) ineligible.add(v.id);
     // Hold back what the turn being judged produced.
     const suspended = suspendedVersions(root, options.session, store);
     // Hide knowledge from branches whose code is not here.
@@ -179,10 +191,11 @@ export async function compactContext(root: string, index: CodebaseIndex | null, 
       for (const id of delivered) {
         const v = earlier.find(x => x.id === id);
         const newest = v ? Math.max(...earlier.filter(x => x.knowledge_id === v.knowledge_id).map(x => x.version)) : 0;
-        if (!v || v.version !== newest || v.state !== "active" || (v.valid_until && Date.parse(v.valid_until) <= now)) ineligible.add(id);
+        if (!v || v.version !== newest || v.state !== "active" || !inForce(v, now)) ineligible.add(id);
       }
     }
-    const pool = store.versions.filter(v => (mode === "investigation" || v.version === latest.get(v.knowledge_id)) && !suspended.has(v.id) && !delivered.has(v.id) && (!options.memoryOnly || !NEVER_PRE_EDIT.has(v.kind)));
+    // Outside its period a fact is not offered for a task (an investigation still sees the history).
+    const pool = store.versions.filter(v => (mode === "investigation" || (v.version === latest.get(v.knowledge_id) && inForce(v, now))) && !suspended.has(v.id) && !delivered.has(v.id) && (!options.memoryOnly || !NEVER_PRE_EDIT.has(v.kind)));
     const lexical = options.memoryOnly ? pool.map(() => 0) : lexicalScores(query, pool.map(v => v.content));
     const shared = (v: KnowledgeVersion) => { const words = tokenize(v.content); return options.memoryOnly ? 0 : query.filter(t => words.includes(t)).length; };
     // What a person said about this repository (a correction, or a message of theirs) is kept for its words, not
@@ -272,7 +285,7 @@ export async function compactContext(root: string, index: CodebaseIndex | null, 
           const source = store.sources.find(s => s.id === v.source_ids[0]);
           const brief = source ? `${source.kind} ${source.reference.length > 48 ? "…" + source.reference.slice(-47) : source.reference}` : "missing";
           const { corrected, said } = statedBy(store, v), teammate = source?.id.startsWith("shared:");
-          const day = v.recorded_at.slice(0, 10);
+          const day = v.recorded_at.slice(0, 10), name = authorOf(store, v);
           // The reason recorded with the rule travels with it, quoted, unless the rule already contains it.
           const because = store.relations.filter(r => r.kind === "motivated_by" && r.from.type === "version" && r.from.id === v.id && r.to.type === "event")
             .map(r => store.events.find(e => e.id === r.to.id)?.content.replace(/\s+/g, " ").trim()).find(reason => reason && !v.content.includes(reason));
@@ -281,10 +294,11 @@ export async function compactContext(root: string, index: CodebaseIndex | null, 
           const flags = notes.length ? ` [${notes.join(", ")}]` : "";
           // A person's own words are their instruction; what the agent noted is evidence to check. Never "approved".
           if (corrected || said) {
-            const who = teammate ? "A teammate" : "The user", agent = teammate ? "their agent" : "the agent";
+            // Named: "c'est moi qui gère ce compte" is of no use to a colleague who does not know who said it.
+            const who = teammate ? (name ? `${name}, a teammate,` : "A teammate") : (name ? `The user (${name})` : "The user"), agent = teammate ? "their agent" : "the agent";
             text = `- ${who} said this in an earlier session on this repository (${day})${corrected ? `, when correcting ${agent}` : ""}:\n  "${content}"\n  It is ${teammate ? "a teammate's" : "the user's own"} instruction for this project: follow it, unless the user says otherwise in this conversation. ${applies}${flags} Memory ${memoryRef(v.id)}.`;
           } else {
-            text = `- Noted ${teammate ? "in a teammate's session on" : "for"} this repository (${day}), not a person's instruction — ${v.kind}${flags}: ${content}\n  ${applies} Check it against the code before relying on it. Source: ${brief}. Memory ${memoryRef(v.id)}.`;
+            text = `- Noted ${teammate ? "in a teammate's session on" : "for"} this repository (${name ? `${name}, ` : ""}${day}), not a person's instruction — ${v.kind}${flags}: ${content}\n  ${applies} Check it against the code before relying on it. Source: ${brief}. Memory ${memoryRef(v.id)}.`;
           }
         } else {
           const relations = store.relations.filter(r => r.from.type === "version" && r.from.id === v.id).slice(0, 4).map(r => `${r.kind} → ${r.to.id} [${r.id}; sources ${r.source_ids.join(", ")}]`);

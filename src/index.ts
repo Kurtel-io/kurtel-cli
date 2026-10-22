@@ -51,7 +51,7 @@ program.command("mcp")
   .description("Serve the fixed repository over MCP stdio (read-only by default)")
   .requiredOption("--root <directory>", "Repository to expose; tools cannot switch roots")
   .option("--graph-only", "Expose graph tools only, without memory or engine calls")
-  .option("--allow-remember", "Allow sourced proposals; never automatic promotion")
+  .option("--allow-remember", "Allow memory writes: rules the agent keeps (active at once) and passages it hands over for learning")
   .action(async options => { const { serveMcp } = await import("./integrations/mcp/server.js"); await serveMcp(options); });
 
 program.command("context")
@@ -173,7 +173,7 @@ program
   .argument("<target>", "Integration target: claude-code | codex")
   .option("--force", "Install even if this folder is not a git repository", false)
   .option("--graph-only", "Codex: expose graph tools only")
-  .option("--allow-remember", "Codex: allow proposed memory writes via MCP")
+  .option("--allow-remember", "Codex: allow memory writes via MCP (rules kept, passages handed over for learning)")
   .option("--capture", "Codex: install automatic conversation capture hooks")
   .action(async (target: string, opts) => {
     if (target === "claude-code") {
@@ -214,9 +214,9 @@ program
 
 program
   .command("memory")
-  .description("Inspect or toggle Kurtel memory (status | on | off | sync | share | preview | log | vectors | models)")
-  .argument("[action]", "status | on | off | sync | share | preview | log | vectors | models", "status")
-  .argument("[args...]", "extra args (e.g. `preview \"<prompt>\"`, `log clear`, `share on|off|status|now`, `vectors import <file.vec>`, `models install`)")
+  .description("Inspect or toggle Kurtel memory (status | on | off | sync | share | preview | log | vectors | models | reactivate)")
+  .argument("[action]", "status | on | off | sync | share | preview | log | vectors | models | reactivate", "status")
+  .argument("[args...]", "extra args (e.g. `preview \"<prompt>\"`, `log clear`, `share on|off|status|now`, `vectors import <file.vec>`, `models install`, `reactivate <id>`)")
   .option("--json", "Machine-readable output", false)
   .option("--quiet", "No spinner/log output (used by background sync)", false)
   .option("--global", "Apply on/off to every repo on this machine (kill switch)", false)

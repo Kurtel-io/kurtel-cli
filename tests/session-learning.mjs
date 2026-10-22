@@ -49,6 +49,8 @@ let calls = 0, mode = 'fail', linkRequests = [];
 const server = createServer(async (req, res) => {
   let text = ''; for await (const part of req) text += part;
   const batch = JSON.parse(text);
+  // No embedding model in this engine: rules learned are found by words.
+  if (req.url === '/v1/embed') { res.writeHead(501); res.end('{"error":"embed_not_configured"}'); return; }
   // Linked rules: the engine names the remembered rules a new rule must be read with.
   if (req.url === '/v1/link') {
     linkRequests.push(batch);

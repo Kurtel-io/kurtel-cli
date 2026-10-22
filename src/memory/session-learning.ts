@@ -6,7 +6,8 @@ import { spawn } from "node:child_process";
 import type { ExtractionRequest, ExtractionResponse, LearningEvent, WorkingItem } from "../domain/learning.js";
 import { knowledgeKinds, type KnowledgeStore, type KnowledgeVersion } from "../domain/knowledge.js";
 import { appendKnowledge, canonicalJSON, digest, emptyBatch, knowledgePath, readKnowledge } from "../storage/knowledge.js";
-import { memoryEnabled, repoActivated } from "../storage/state.js";
+import { memoryEnabled, memorySpace, repoActivated } from "../storage/state.js";
+import { isDay, localDay, storedValidity } from "./validity.js";
 import { sessionCaptureEnabled, ingestSession } from "../integrations/session-capture.js";
 import { currentBranch, headCommit } from "../repository/git.js";
 import { acquireLock, releaseLock } from "../storage/lock.js";
@@ -71,17 +72,18 @@ export function extractionContextIds(store: KnowledgeStore, session: string): st
   return [...new Set([...(history.at(-1)?.working.map(w => w.event_id) ?? []), ...store.events.filter(e => e.session_id === session && done.has(e.id)).slice(-6).map(e => e.id)])];
 }
 
-export function prepareExtraction(store: KnowledgeStore, session: string): ExtractionRequest | null {
+/** In a space the engine also gets the day of the conversation, to date the facts that hold for a while. */
+export function prepareExtraction(store: KnowledgeStore, session: string, { space = false } = {}): ExtractionRequest | null {
   const done = extractedEvents(store, session);
   // A turn that touched another repository is not learned from: its text may describe that repository's code.
   const foreign = new Set(sessionTurns(store, session).filter(t => t.foreign).flatMap(t => [...t.eventIds]));
   // Text erased by retention (stale capture) has nothing left to learn from.
   const pending = store.events.filter(e => e.session_id === session && e.id.startsWith("capture-event:") && !done.has(e.id) && !foreign.has(e.id) && !textErased(store, e));
-  const events: LearningEvent[] = []; let size = 0;
+  const events: LearningEvent[] = []; let size = 0, last = "";
   for (const event of pending.sort((a, b) => a.recorded_at.localeCompare(b.recorded_at) || a.id.localeCompare(b.id))) {
     const input = eventInput(store, event.id)!;
     if (events.length >= 20 || size + input.content.length > 48000) break;
-    events.push(input); size += input.content.length;
+    events.push(input); size += input.content.length; last = event.recorded_at;
   }
   if (!events.length) return null;
   const newIds = new Set(events.map(e => e.id));
@@ -92,7 +94,7 @@ export function prepareExtraction(store: KnowledgeStore, session: string): Extra
     if (!event || textErased(store, store.events.find(e => e.id === id)!) || context_events.length >= 12 || size + event.content.length > 80000) continue;
     context_events.push(event); size += event.content.length;
   }
-  const body = { protocol: 1 as const, session_id: session, events, context_events };
+  const body = { protocol: 1 as const, session_id: session, events, context_events, ...(space ? { space: true as const, date: localDay(last) } : {}) };
   return { ...body, batch_id: digest(canonicalJSON(body)) };
 }
 
@@ -104,6 +106,7 @@ export function validateResponse(request: ExtractionRequest, response: Extractio
   for (const c of response.candidates) {
     if (c.kind === "lesson" || !fresh.has(c.event_id) || !grounded(c.event_id, c.quote) || !knowledgeKinds.includes(c.kind as KnowledgeVersion["kind"]) || !Array.isArray(c.zones) || c.zones.length > 8 || !c.zones.every(z => typeof z === "string" && z.length > 0 && z.length < 200 && !z.includes("..") && !/^(?:[A-Za-z]:|\/)/.test(z) && all.get(c.event_id)!.content.includes(z))) throw new Error("Ungrounded candidate");
     if ((c.reason_quote || c.reason_event_id) && !grounded(c.reason_event_id, c.reason_quote)) throw new Error("Ungrounded reason");
+    if ((c.valid_from != null && !isDay(c.valid_from)) || (c.valid_until != null && !isDay(c.valid_until))) throw new Error("Invalid validity day");
   }
   for (const w of response.working) if (!["goal", "constraint", "finding", "next_step", "attempt", "result"].includes(w.category) || !grounded(w.event_id, w.quote)) throw new Error("Ungrounded working memory");
 }
@@ -141,7 +144,8 @@ export function applyExtraction(root: string, request: ExtractionRequest, respon
       const id = `version:${digest(`${knowledgeId}:${request.batch_id}:${event.id}`)}`;
       const version: KnowledgeVersion = { id, knowledge_id: knowledgeId, version: (head?.version ?? 0) + 1, previous_version_id: head?.id ?? null,
         kind: same ? same.kind : candidate.kind as KnowledgeVersion["kind"], state: verdict ? "contested" : head?.state ?? "active", content: candidate.quote, zones: candidate.zones.length ? candidate.zones : head?.zones ?? [],
-        source_ids: [...new Set([...(head?.source_ids ?? []), ...event.source_ids])], event_ids: [...new Set([...(head?.event_ids ?? []), event.id, ...(verdict ? [verdict.eventId] : [])])], recorded_at: now, valid_from: null, valid_until: null, legacy_pattern_id: null, legacy_score: null };
+        source_ids: [...new Set([...(head?.source_ids ?? []), ...event.source_ids])], event_ids: [...new Set([...(head?.event_ids ?? []), event.id, ...(verdict ? [verdict.eventId] : [])])], recorded_at: now,
+        ...(candidate.valid_from || candidate.valid_until ? storedValidity(candidate.valid_from, candidate.valid_until) : { valid_from: head?.valid_from ?? null, valid_until: head?.valid_until ?? null }), legacy_pattern_id: null, legacy_score: null };
       batch.versions.push(version); heads.set(knowledgeId, version);
       if (head) for (const relation of [...current.relations, ...batch.relations]) {
         if (relation.from.type === "version" && relation.from.id === head.id && relation.kind !== "supported_by") batch.relations.push({ ...relation, id: `carry:${digest(`${id}:${relation.id}`)}`, from: { type: "version", id }, recorded_at: now });
@@ -168,7 +172,7 @@ export async function learnSession(root: string, session: string): Promise<{ pro
   if (fd === null) throw new Error("Session learning already running for this session");
   try {
     ingestSession(root, session);
-    const request = prepareExtraction(readKnowledge(root), session);
+    const request = prepareExtraction(readKnowledge(root), session, { space: memorySpace() });
     if (!request) {
       try { purgeCaptureText(root, session); } catch { /* Store busy: the next hook erases it. */ }
       return { processed: 0, candidates: 0, lessons: 0 };

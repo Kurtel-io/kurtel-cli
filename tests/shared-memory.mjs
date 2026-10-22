@@ -35,7 +35,7 @@ const engine = createEngineServer({ token,
   model: async (_i, input) => 'quote' in input ? { keep: true } : ({ working: [], candidates: input.events.filter(e => e.content.startsWith('DECISION:')).map(e => ({ event_id: e.id, quote: e.content, kind: 'decision', zones: [...new Set(e.content.match(/src\/[\w.]+/g) ?? [])], reason_event_id: null, reason_quote: null })) }),
   correctionModel: async (instructions, input) => 'rules' in input ? classify(instructions, input) : { remember: null } });
 await new Promise(resolve => engine.listen(0, '127.0.0.1', resolve));
-const { server, bodies } = await createSharedServer({ tokens: { 'token-alice-000000000000000000000000': 'alice', 'token-bob-000000000000000000000000': 'bob' } });
+const { server, bodies } = await createSharedServer({ tokens: { 'token-alice-000000000000000000000000': 'alice', 'token-bob-000000000000000000000000': 'bob' }, names: { alice: 'Alice Martin' } });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const sharedEndpoint = `http://127.0.0.1:${server.address().port}/api/memory/knowledge`;
 process.argv[1] = fileURLToPath(new URL('../dist/index.js', import.meta.url));
@@ -126,7 +126,7 @@ await shared.syncShared(root);
 assert.equal([...heads().values()].filter(v => v.content.startsWith('DECISION: src/pay.ts keeps amounts') && v.state === 'active').length, 1, 'Alice sees one knowledge too');
 use('bob');
 const context = await compactContext(root, null, 'rounding src/pay.ts', { paths: ['src/pay.ts'], session: 'bob-1' });
-assert(context.items.some(i => i.text.includes('integer cents') && i.text.includes("a teammate's session")), 'teammate provenance');
+assert(context.items.some(i => i.text.includes('integer cents') && i.text.includes("a teammate's session") && i.text.includes('(Alice Martin, ')), 'teammate provenance, with their name');
 
 // 3. Bob's confirmation counts for Alice too.
 await user('bob-1', 'Add refunds to src/pay.ts');

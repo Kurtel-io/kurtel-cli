@@ -48,7 +48,9 @@ kurtel install codex --capture           # also learn from Codex sessions
 kurtel uninstall codex
 ```
 
-With `--capture`, trust the Kurtel hooks in Codex `/hooks`, then start a new session. `kurtel mcp --root <repository>` serves a repository to any other MCP client, read-only by default.
+With `--capture`, trust the Kurtel hooks in Codex `/hooks`, then start a new session. `kurtel mcp --root <repository>` serves a repository to any other MCP client, read-only by default. With `--allow-remember`, the agent can keep a rule itself (`remember`, active at once) and hand over the passages of a conversation worth learning from (`learn_from_conversation`), for agents that have no hooks; an agent serving several people gives each one's name as `speaker`.
+
+What a person taught is delivered with their name, so that "I'm the one who handles this account" tells a teammate who to ask. Teammates see the name of your Kurtel account; your own machine uses `kurtel config set name "<your name>"`, or Git's `user.name`.
 
 ## Commands
 
@@ -73,7 +75,7 @@ kurtel uninstall claude-code
 
 - **Source code:** never. The graph sent to kurtel.io is a digest of paths, exports, routes and relationships.
 - **Memory:** conversations are captured locally as a temporary buffer. Bounded excerpts are sent to kurtel.io, which uses a hosted language model to extract knowledge and recognize corrections; Kurtel does not store those requests. Captured text is erased from your machine once it has been learned from. Learned knowledge (short quotes with their files) is stored on kurtel.io for the members of your organization who have access to the repository. Conversations themselves are never shared.
-- **Choosing the rules for a message:** your message and up to 40 candidate rules are sent to kurtel.io, which has a hosted reading model score each rule against the message; nothing from that request is kept. When the service cannot be reached, the choice is made on your machine.
+- **Choosing the rules for a message:** your message is sent to kurtel.io, which has a hosted embedding model turn it into a vector, so that rules are found by meaning as well as by words; each rule is sent the same way once, when it is learned. The message and up to 40 candidate rules then go to a hosted reading model, which scores each rule against the message. Nothing from those requests is kept. When the services cannot be reached, the choice is made on your machine, by words.
 - With `kurtel memory off`, only the graph digest is sent.
 - Every request is checked against your access to the repository. When access is removed, Kurtel stops in that repository and erases the knowledge it stored there on your machine.
 - Context given to an assistant is then subject to that assistant's own provider settings.

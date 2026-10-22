@@ -51,6 +51,15 @@ export function setMemoryEnabled(root: string, enabled: boolean): void {
   saveMemoryState(root, s);
 }
 
+/**
+ * A space: the memory of a team's assistants rather than of a code repository (dated facts, a fact replaced by a
+ * newer one). Undocumented switch for tests and local trials (KURTEL_MEMORY_SPACE=1), to be removed once the memory
+ * carries its kind on the server.
+ */
+export function memorySpace(): boolean {
+  return process.env.KURTEL_MEMORY_SPACE === "1";
+}
+
 export function memoryDisabledGlobally(): boolean {
   return loadConfig().memoryDisabled === true;
 }
